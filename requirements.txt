@@ -1,1 +1,16 @@
+# LLM 调用（DeepSeek 兼容 OpenAI SDK）
 openai>=1.40.0
+
+# 爬虫：抓取 runoob 教程并解析 HTML
+requests>=2.28
+beautifulsoup4>=4.12
+lxml>=5.0
+
+# 本地 embedding：BGE-M3 官方 ONNX 推理（onnxruntime，无 torch 依赖）
+numpy>=1.26
+onnxruntime>=1.24
+tokenizers>=0.20
+huggingface-hub>=0.30
+
+# 向量库：Qdrant 本地嵌入式模式（无需 Docker）
+qdrant-client>=1.12

@@ -41,8 +41,16 @@ App_landing/
 ├── agent.py        # LLM 调用 + 教练 System Prompt
 ├── config.py       # DeepSeek 配置（API Key 从环境变量读取）
 ├── state.py        # 状态持久化（JSON）
-├── data/           # 用户状态数据（不提交）
-│   └── .gitkeep
+├── rag/            # RAG / 知识库（详见下方章节）
+│   ├── crawl.py        # 爬虫：抓 runoob Python3 教程 → data/rag/raw/*.json
+│   ├── chunk.py        # 切块：raw → data/rag/chunks.jsonl（按 token，≤350）
+│   ├── embeddings.py   # 本地 BGE-M3 向量化引擎（onnxruntime，无 torch）
+│   ├── embed_store.py  # 向量化并写入 Qdrant 本地库
+│   ├── retrieve.py     # 检索：query → top-k（含 recall@k 自检）
+│   └── build.py        # 一键管道：crawl → chunk → store
+├── data/           # 用户状态 + RAG 产物（均不提交）
+│   ├── user_state.json
+│   └── rag/        # raw/ chunks.jsonl qdrant/ models/
 └── .gitignore
 ```
 
@@ -56,9 +64,56 @@ App_landing/
 | V0.3 | Agent 状态机（含能力测评） | 待开始 |
 | V0.4 | Human-in-the-loop | 待开始 |
 | V0.5 | Evaluation（学习效果评估） | 待开始 |
-| V0.6 | Tools（代码执行/检索/进度） | 后续 |
-| V0.7 | RAG / 知识库 | 后续 |
+| V0.6 | Tools（代码执行/检索/进度） | 🔸 Retrieval Tool 已实现（rag/tool.py） |
+| V0.7 | RAG / 知识库 | ✅ 本地向量库 + Agent 接入完成（recall@5=100%，回答带来源引用） |
 | V1.0 | Web MVP | 后续 |
+
+## RAG / 知识库（rag/）
+
+抓取 [runoob Python3 教程](https://www.runoob.com/python3/python3-tutorial.html) 全 84 章，构建本地向量库：
+
+```powershell
+# 全流程（已抓过的章节自动跳过；已有向量库时 store 阶段会跳过）
+.\.venv\Scripts\python.exe -m rag.build
+
+# 强制重建向量库（改完切块/embedding 后使用）
+.\.venv\Scripts\python.exe -m rag.build --rebuild
+
+# 单独跑某阶段
+.\.venv\Scripts\python.exe -m rag.crawl --limit 3   # 试抓前 3 章
+.\.venv\Scripts\python.exe -m rag.chunk             # 重切块
+.\.venv\Scripts\python.exe -m rag.embed_store --force   # 重新入库
+
+# 检索
+.\.venv\Scripts\python.exe -m rag.retrieve "字典的 get 方法"
+.\.venv\Scripts\python.exe -m rag.retrieve --selfcheck   # recall@k 自检
+```
+
+技术要点：
+- **切块**：按 bge tokenizer 计数，单块目标 300 token、重叠 50、硬上限 350（远低于模型上限）。
+- **Embedding**：`BAAI/bge-m3` 官方 ONNX 直跑（onnxruntime CPU，无需 torch/PyTorch）；首次运行下载约 2GB 模型到 `data/rag/models/`。
+- **向量库**：Qdrant 本地嵌入式模式（1024 维、cosine），数据在 `data/rag/qdrant/`，无需 Docker。
+- 所有产物在 `data/` 下，已被 `.gitignore` 排除，不提交仓库。
+
+### Agent 接入（RAG 闭环）
+
+`app.py` 启动的教练会**自动判断**用户消息是否需要查知识库：出现具体概念（列表/字典/函数…）
+或问句特征时才检索，目标澄清类消息（如"我想学 Python"）不会触发。
+
+```powershell
+.\.venv\Scripts\python.exe app.py
+# ... 你：字典的 get 方法默认返回什么
+# Coach：根据参考资料 [1]：dict.get(key, default=None) ...（回答末尾标注来源）
+# [参考资料] [1] Python3 字典 / 字典内置函数&方法；[2] ...
+#
+# 对话中可输入 /rag off 关闭检索（用于对照"无 RAG"的回答）
+```
+
+实现要点：
+- `rag/tool.py`：`should_retrieve()` 门控 + `build_context()` 构造带 `[1][2]` 编号的参考资料。
+- `agent.py`：检索结果作为**独立的第二条 system 消息**注入（不写入对话历史，避免历史膨胀）；
+  要求模型优先依据资料回答、标注编号、资料不足时明说。
+- `chat_with_coach()` 返回 `(回答, 来源列表)`，`app.py` 据此打印来源章节。
 
 ## 验收测试
 

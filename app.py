@@ -1,11 +1,16 @@
 from agent import chat_with_coach
+from rag.tool import format_sources
 from state import load_state, save_state
 
 
 state = load_state()
 
+# 知识库检索开关（可用 /rag off 关闭，做“有 RAG vs 无 RAG”对照）
+use_rag = True
+
 print("AI Learning Coach 已启动")
 print("输入 exit 退出程序")
+print("输入 /rag off 或 /rag on 切换知识库检索")
 
 
 while True:
@@ -16,14 +21,25 @@ while True:
         print("学习状态已保存。")
         break
 
+    # 知识库开关指令
+    if user_input.lower() in ["/rag off", "/rag on"]:
+        use_rag = user_input.lower().endswith("on")
+        print("知识库检索：", "已开启" if use_rag else "已关闭")
+        continue
+
     history = state["conversation_history"]
 
-    answer = chat_with_coach(
+    answer, sources = chat_with_coach(
         user_input=user_input,
-        history=history
+        history=history,
+        use_rag=use_rag
     )
 
     print("\nCoach：", answer)
+
+    # 本次使用了知识库时，打印来源章节（便于核对回答依据）
+    if sources:
+        print("\n[参考资料]", format_sources(sources))
 
     state["conversation_history"].append(
         {
