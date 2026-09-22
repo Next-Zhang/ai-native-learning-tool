@@ -1,9 +1,20 @@
 from openai import OpenAI
 
+from assessor import describe_progress
 from config import DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL
+from daily import describe_today_task
+from evaluator import describe_result
+from planner import describe_plan
 from rag.tool import build_context, should_retrieve
-from state import PROFILE_FIELDS
-
+from stages import stage_label, stage_prompt
+from state import (
+    PROFILE_FIELDS,
+    STAGE_ASSESSMENT,
+    STAGE_EVALUATION,
+    STAGE_LEARNING,
+    STAGE_PLANNING,
+    STAGE_PROFILE_UPDATE,
+)
 
 client = OpenAI(
     api_key=DEEPSEEK_API_KEY,
@@ -11,25 +22,7 @@ client = OpenAI(
 )
 
 
-SYSTEM_PROMPT = """
-你是 AI Learning Coach，一个持续帮助用户学习技能的智能教练。
-
-你的目标不是单纯回答问题，而是帮助用户最终掌握一个技能。
-
-当前阶段优先完成学习需求澄清。
-
-需要了解：
-1. 用户想学习什么
-2. 用户当前水平
-3. 用户每天可以投入多少时间
-4. 用户希望多久达到目标
-
-规则：
-- 如果信息不足，一次只询问最关键的1~2个问题。
-- 不要过早生成完整学习计划。
-- 不要一次输出大量知识。
-- 用户说“我会了”并不等于真正掌握，后续需要通过任务验收。
-"""
+# 注意：教练的系统提示词现在由状态机按“当前阶段”提供（见 stages.STAGE_PROMPTS）
 
 
 # 注入参考资料时追加的规则（RAG）
@@ -86,7 +79,30 @@ def describe_known_profile(state) -> str:
         lines.append(f"- 仍缺失（需要询问）：{'、'.join(missing)}")
     stage = state.get("current_stage")
     if stage:
-        lines.append(f"- 当前阶段：{stage}")
+        lines.append(f"- 当前阶段：{stage_label(stage)}")
+    # 测评阶段：把测评进度交给教练，确保一次只问当前这道题、不跳题
+    if stage == STAGE_ASSESSMENT:
+        progress_text = describe_progress(state)
+        if progress_text:
+            lines.append(progress_text)
+    # 计划阶段：把已生成的计划交给教练，照实呈现而不是另编一份
+    if stage == STAGE_PLANNING:
+        plan_text = describe_plan(state)
+        if plan_text:
+            lines.append(plan_text)
+    # 学习/验收阶段：注入今日任务与待验收的提交内容
+    if stage in (STAGE_LEARNING, STAGE_EVALUATION):
+        task_text = describe_today_task(state)
+        if task_text:
+            lines.append(task_text)
+        submission = state.get("pending_submission") or {}
+        if submission.get("content"):
+            lines.append(f"- 用户已提交待验收内容：{submission['content'][:400]}")
+    # 验收/画像更新阶段：把结构化判定结论交给教练，照实沟通
+    if stage in (STAGE_EVALUATION, STAGE_PROFILE_UPDATE):
+        result_text = describe_result(state)
+        if result_text:
+            lines.append(result_text)
     return "\n".join(lines)
 
 
@@ -109,11 +125,13 @@ def chat_with_coach(user_input, history, use_rag=False, top_k=5, state=None):
     if use_rag and should_retrieve(user_input):
         context, sources = build_context(user_input, top_k=top_k)
 
-    # 2) 组装消息：系统提示 -> (已知信息) -> (参考资料) -> 历史 -> 本次用户输入
+    # 2) 组装消息：阶段提示词 -> (已知信息) -> (参考资料) -> 历史 -> 本次用户输入
+    #    阶段提示词由状态机提供：处于哪个阶段，教练就按那个阶段的行为准则工作
+    current_stage = (state or {}).get("current_stage")
     messages = [
         {
             "role": "system",
-            "content": SYSTEM_PROMPT
+            "content": stage_prompt(current_stage)
         }
     ]
 

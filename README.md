@@ -61,7 +61,7 @@ App_landing/
 | V0.01 | DeepSeek 基础聊天（API/SDK/CLI） | ✅ 已完成 |
 | V0.1 | 持久化 Agent State（重启可续） | ✅ 已完成 |
 | V0.2 | 结构化用户画像（LLM 抽取 → 状态） | ✅ 已完成（抽取 + 合并 + 阶段推进 + 状态回灌） |
-| V0.3 | Agent 状态机（含能力测评） | 待开始 |
+| V0.3 | Agent 状态机（含能力测评） | ✅ 已完成（V0.3a 骨架 / b 测评 / c 计划 / d 每日任务 / e 验收与画像更新） |
 | V0.4 | Human-in-the-loop | 待开始 |
 | V0.5 | Evaluation（学习效果评估） | 待开始 |
 | V0.6 | Tools（代码执行/检索/进度） | 🔸 Retrieval Tool 已实现（rag/tool.py） |
@@ -141,8 +141,158 @@ App_landing/
 - **状态回灌**：把"已收集信息 + 仍缺失字段"注入对话，教练不再重复提问，只追问缺的那项。
 - **失败兜底**：抽取失败返回空画像并告警，绝不中断对话。
 
-新增/改动：`profile_extractor.py`（新增）、`state.py`（`merge_profile` / `profile_complete` / `maybe_advance_stage`）、
-`agent.py`（已知信息注入）、`app.py`（每轮抽取并打印画像进度）。
+新增/改动：`profile_extractor.py`（新增）、`state.py`（`merge_profile` / `profile_complete`）、
+`agent.py`（已知信息注入）、`app.py`（每轮抽取并打印画像进度）。阶段推进已迁至 `stages.py`。
+
+## V0.3 Agent 状态机
+
+主干阶段（`stages.py` 是转换规则与守卫的唯一来源）：
+
+```text
+goal_clarification → assessment → planning → learning → evaluation → profile_update
+                                                                          ↓
+                                                          learning / review / completed
+```
+
+**每个阶段一套系统提示词**——阶段决定"教练此刻该做什么"，这是状态驱动行为的核心：
+
+| 阶段 | 教练行为准则 |
+|---|---|
+| 目标澄清 | 一次只问 1~2 个最关键的问题，不提前给计划 |
+| 能力测评 | 3~5 个由易到难的实际任务，**一次只出一道**，不用"你会不会"来判断 |
+| 学习计划 | 只规划**未来 7 天**（滚动窗口；不足 7 天按实际期限） |
+| 每日任务 | 每次只给一个 `today_task`（目标/材料/练习/预计时间/完成标准） |
+| 结果验收 | 要求提交证据，判定完成度与错误类型，给出 重试/补充/通过 |
+| 画像更新 | 更新掌握度与薄弱点；重大变更先征求用户确认 |
+
+**转换守卫**（条件不满足绝不推进，每次只走一步）：
+
+| 转换 | 守卫条件 |
+|---|---|
+| 目标澄清 → 能力测评 | 四项信息齐全（目标/水平/每日时间/期限） |
+| 能力测评 → 学习计划 | 已产出 `skill_profile` |
+| 学习计划 → 每日任务 | 已产出 `current_plan` **且用户已确认**（`plan_confirmed`） |
+| 每日任务 → 结果验收 | 有 `today_task` 且用户已提交结果 |
+| 结果验收 → 画像更新 | 已产出验收结论（`latest_result`） |
+| 画像更新 → 每日任务（**回路**） | 验收结论已应用（通过则推进到下一个任务，未通过则重做当前任务） |
+
+其它要点：
+- 旧状态文件由 `state.ensure_keys()` **自动补齐** V0.3 新字段（`assessment_progress` / `pending_submission` / `latest_result` / `latest_result_applied` / `plan_confirmed` / `plan_progress`），不覆盖已有数据。
+- 主干已闭环；后续版本：V0.4 Human-in-the-loop、V0.5 Evaluation、复习系统、7 天窗口滚动重排（当前窗口排完后暂只提示"已完成"）。
+
+新增/改动：`stages.py`（新增）、`state.py`（新字段 + `ensure_keys`，阶段推进迁出）、
+`agent.py`（按阶段选提示词）、`app.py`（走 `try_advance` 并打印阶段变化）。
+
+### V0.3b 能力测评（`assessor.py`）
+
+```text
+进入 assessment
+  ① ensure_plan()      生成 3~5 道由易到难的大纲（主题 + 难度）→ state["assessment_progress"]
+  ② record_answer()    每轮把「上一轮的题 + 本轮用户回答」交给 LLM 判三档
+  ③ finalize()         答满题量 → 代码聚合出 skill_profile，并按阈值产出 weak_points
+  ④ 守卫自动放行        skill_profile 非空 → planning
+```
+
+关键设计：
+- **三档判定**：`mastered=1.0 / partial=0.5 / missing=0.0`（中文别名如"掌握/部分正确/不会"自动归一）。
+- **聚合与阈值在代码里，不在 LLM 手里**：同一知识点多题取平均；`weak_points = 分数 < 0.6`（阈值/题量都是模块常量，可调）。
+- **汇总不额外调 LLM**：判定只有三档，聚合是确定性计算 —— 比"再让模型汇总一次"更省、更稳、可测试。
+- **只问当前这道题**：测评进度会注入对话（`assessor.describe_progress()`），避免跳题或一次抛出多题。
+- **兜底**：出题失败用目标生成 3 道通用递进题；判卷调用失败按 `missing` 记录，不中断测评。
+
+新增/改动：`assessor.py`（新增）、`agent.py`（注入测评进度）、`app.py`（测评阶段记账与收尾）。
+
+### V0.3c 学习计划（`planner.py`）
+
+```text
+进入 planning
+  ① plan_horizon()     窗口 = min(7, 期限天数)；期限不足 7 天按实际，解析不出则默认 7
+  ② generate_plan()    围绕 目标/水平/每日时间/能力画像/薄弱点 生成 N 天计划（LLM + JSON）
+  ③ ensure_plan()      写入 current_plan = {horizon_days, start_date, days, version}
+  ④ 教练照实呈现计划（计划摘要会注入对话，不让模型另编一份）
+  ⑤ confirm_plan()     **B2：LLM 判断用户是否确认**；确认后 → 守卫放行 → learning
+```
+
+关键设计：
+- **7 天是"步长"而非"总时长"**：目标是 3 个月，也每次只排最近 7 天，滚动推进。
+- **计划结构固定**：每天 `theme` + 1~3 个任务，每个任务含 `goal / material / exercise / minutes / done_criteria`（可执行、可验收）。
+- **清洗与兜底在代码里**：天数对齐窗口（截断 + 占位补齐）、重编号、任务数上限 3、空任务丢弃；模型不可用时用**围绕薄弱点的确定性兜底计划**。
+- **先确认、后教学**：`plan_confirmed` 未置位时守卫拦在 planning；确认判定由 LLM 完成（含糊、反问、要求修改一律不算确认），判定失败保持等待、绝不误进。
+
+新增/改动：`planner.py`（新增）、`state.py`（+`plan_confirmed`）、`stages.py`（守卫加确认条件）、
+`agent.py`（注入计划摘要）、`app.py`（计划阶段接线）。
+
+### V0.3d 每日任务（`daily.py`）
+
+```text
+进入 learning
+  ① 计划游标 (day, task) → 取出**一个**任务
+  ② build_today_task()   写入 today_task：目标/材料/练习/预计时间/完成标准
+  ③ 教练照实呈现这一个任务（任务注入对话，不让它另编或提前布置后续任务）
+  ④ detect_submission()  判断用户是否提交了可验收结果（LLM）
+  ⑤ 命中提交 → 写 pending_submission → 守卫放行 → evaluation
+  ⑥ mark_task_done()     验收通过后推进游标（由 V0.3e 调用）
+```
+
+游标模型（"每次只给一个任务"）：`plan_progress = {day, task, completed, finished}`
+- 当天还有任务 → `task + 1`；当天完成 → 下一天 `task = 1`；全部完成 → `finished = true`
+- 全空的天会被跳过；计划排完后不会重复发最后一个任务
+
+关键设计：
+- **只讲当前这一个任务**：任务与进度都会注入对话，教练不能跳到后面。
+- **提交识别用 LLM**（与 V0.3c 的确认判定同套路）：提问／闲聊／"快好了"都不算提交；判定失败保持 learning，绝不误推进。
+- **提交内容原样留存**（代码可原样摘录）到 `pending_submission`，供 V0.3e 验收。
+
+新增/改动：`daily.py`（新增）、`state.py`（+`plan_progress`）、`agent.py`（注入任务与待验收内容）、`app.py`（learning 阶段接线）。
+
+### V0.3e 结果验收与画像更新（`evaluator.py`）
+
+```text
+用户提交 (pending_submission)
+  ① evaluate()      结构化判定：完成度 / 掌握度 / 错误类型 / 下一步
+  ② 完成度三档      completed=1.0 / partial=0.5 / not_completed=0.0（代码映射，不让模型给分）
+  ③ 一致性守卫      pass 只在 completed 时允许；partial → supplement；not_completed → retry
+  ④ 教练按判定沟通（结论注入对话，不让它另编）
+  ⑤ apply_update()  代码侧更新画像并决定下一步：
+       pass  → mark_task_done() 推进游标（下一个任务）
+       其它  → 保留当前任务、清空提交（让用户重做）
+  ⑥ 阶段回路        结果验收 → 画像更新 → 每日任务
+```
+
+关键设计：
+- **掌握度由完成度推导**（1.0 / 0.5 / 0.0），与 V0.3b 测评口径一致。
+- **动作一致性在代码里强制**：模型给出"没做完却通过"时会被纠正为 supplement / retry。
+- **画像平滑更新**：已有知识点取新旧平均（避免被单次表现拉偏），薄弱点复用 `< 0.6` 阈值规则。
+- **错误类型结构化留存**（如"概念混淆""语法错误"），供后续复习系统使用。
+- **判定失败保持 evaluation**（无 Key / 网络异常），绝不写入假判定。
+
+新增/改动：`evaluator.py`（新增）、`state.py`（+`latest_result_applied`）、`stages.py`（+`profile_update → learning` 回路）、
+`agent.py`（注入判定结论）、`app.py`（验收阶段接线）。
+
+## 测试用：状态清理
+
+测试阶段经常需要"测前准备 / 测后清理"。工具只操作 `data/user_state.json`（与 `data/backups/`），
+**绝不触碰** `.venv`、向量库、embedding 模型。
+
+会内命令（`app.py` 运行中直接输入）：
+
+```
+/reset        清空对话历史（画像 / 计划 / 阶段 / 进度都保留）
+/reset all    完全重置（回到目标澄清；会先自动备份）
+```
+
+命令行工具（`reset.py`，退出程序后使用）：
+
+```powershell
+.\.venv\Scripts\python.exe reset.py                    # 完全重置
+.\.venv\Scripts\python.exe reset.py --history          # 只清对话历史
+.\.venv\Scripts\python.exe reset.py --stage assessment # 重置并跳到指定阶段（分段测试）
+.\.venv\Scripts\python.exe reset.py --no-backup        # 清理前不备份
+```
+
+- 每次清理前自动备份到 `data/backups/user_state_<时间戳>.json`，**只保留最近 5 份**
+- 备份目录与测试临时目录都已加入 `.gitignore`
+- `exit` 只是退出，**不会清理**（学习数据保留）
 
 ## 验收测试
 
@@ -153,6 +303,52 @@ App_landing/
   ```
   覆盖 schema 清洗、合并规则（空值不覆盖）、阶段守卫（缺一不推进 / 齐全必推进且幂等），
   以及真实抽取用例（输入"我想一个月学习 Python 数据分析…每天能学 30 分钟"→ 抽到 4 字段并进入 `assessment`；未设置 `DEEPSEEK_API_KEY` 时自动跳过）。
+- **V0.3a**：状态机骨架
+  ```powershell
+  .\.venv\Scripts\python.exe tests\test_stages.py
+  ```
+  覆盖线性阶段链、每阶段标签与提示词（含"7 天""一次只出一道"等关键规则）、守卫拦截与放行、
+  单步推进、出口阶段无自动转换、旧状态文件升级与可变默认值隔离。
+- **V0.3b**：能力测评
+  ```powershell
+  .\.venv\Scripts\python.exe tests\test_assessment.py
+  ```
+  覆盖判定映射与别名归一、大纲清洗（重编号/截断 5 题/空题丢弃/难度收敛/空大纲兜底）、
+  知识点聚合与薄弱点阈值边界（0.6 不算薄弱）、进度与结束判定，
+  以及**闭环用例**（finalize 后守卫必须能进入 `planning`）；真实出题与判卷用例需 `DEEPSEEK_API_KEY`。
+- **V0.3c**：学习计划
+  ```powershell
+  .\.venv\Scripts\python.exe tests\test_plan.py
+  ```
+  覆盖期限解析（阿拉伯/中文数字、各时间单位、模糊表达返回 None）、窗口天数（min(7,期限)、
+  不足 7 天按实际、默认 7）、计划清洗（对齐窗口/重编号/任务数上限/空任务丢弃/兜底计划）、
+  **确认门控**（有计划未确认必须拦住、确认后放行，无 Key 时判定失败也不误置确认），
+  以及真实用例（生成 7 天计划 + B2 确认判定：同意 / 要求修改各一次）。
+- **V0.3d**：每日任务
+  ```powershell
+  .\.venv\Scripts\python.exe tests\test_daily.py
+  ```
+  覆盖计划游标（默认值/字段补齐/异常兜底）、任务查找与越界、顺序推进（task→task、day→day、
+  排完返回 None、跳过空白天）、任务构建与游标推进（`mark_task_done` 清空 today_task 与提交）、
+  **守卫**（有任务无提交被拦 / 有提交放行）、无 Key 时提交判定不误报；
+  真实用例：提问判 false、给出代码判 true 并写入 `pending_submission`。
+- **V0.3e**：结果验收与画像更新
+  ```powershell
+  .\.venv\Scripts\python.exe tests\test_evaluation.py
+  ```
+  覆盖完成度→掌握度映射、中文/英文别名归一、掌握度由完成度推导（模型给分不作数）、
+  **动作一致性守卫**（pass 仅限 completed）、错误类型归一、`apply_update` 的 pass 分支
+  （推进游标 + 画像平均 + 薄弱点重算）与 retry 分支（保留任务 + 清空提交）、
+  **守卫链**（无判定不得进 profile_update、未应用不得回 learning）、无 Key 时不误判；
+  真实用例：提交正确代码判 completed/pass、乱答判 not_completed/retry。
+- **状态清理工具**
+  ```powershell
+  .\.venv\Scripts\python.exe tests\test_reset.py
+  ```
+  覆盖 `clear_history` 计数、`reset_all`（写回默认 + 自动备份 + 备份内容正确）、
+  `reset_history`（清历史但保留画像/计划/阶段/进度）、`reset_to_stage`（非法阶段抛错且不写文件）、
+  state 文件缺失时安全重建、备份只保留最近 N 份、`--no-backup` 不产生备份。
+  （临时文件建在 `tests/.tmp/`，不写系统临时目录，也不碰真实状态文件。）
 
 ## 许可证
 

@@ -20,9 +20,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from profile_extractor import UserProfile, extract_profile
+from stages import try_advance
 from state import (
     DEFAULT_STATE,
-    maybe_advance_stage,
     merge_profile,
     missing_profile_fields,
     profile_complete,
@@ -111,7 +111,7 @@ def test_stage_guard_blocks_incomplete():
     state.update({"learning_goal": "Python", "current_level": "有少量基础", "daily_minutes": 30})
 
     assert profile_complete(state) is False
-    assert maybe_advance_stage(state) is False
+    assert try_advance(state) is None
     assert state["current_stage"] == "goal_clarification"
     assert missing_profile_fields(state) == ["target_date"]
 
@@ -128,10 +128,10 @@ def test_stage_advances_when_complete_and_is_idempotent():
     )
 
     assert profile_complete(state) is True
-    assert maybe_advance_stage(state) is True
+    assert try_advance(state) == "assessment"
     assert state["current_stage"] == "assessment"
     # 幂等：已是 assessment，不应再次“推进”
-    assert maybe_advance_stage(state) is False
+    assert try_advance(state) is None
 
 
 # ---------------------------------------------------------------------------
@@ -158,7 +158,7 @@ def test_live_extraction():
     # 合并进 state 后，四项齐全 -> 必须推进到 assessment（文档验收标准）
     state = fresh_state()
     merge_profile(state, profile)
-    assert maybe_advance_stage(state) is True
+    assert try_advance(state) == "assessment"
     assert state["current_stage"] == "assessment"
 
 
