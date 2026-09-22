@@ -5,12 +5,13 @@ from state import load_state, save_state
 
 state = load_state()
 
-# 知识库检索开关（可用 /rag off 关闭，做“有 RAG vs 无 RAG”对照）
-use_rag = True
+# 知识库检索开关：当前**默认关闭**（先不调用 RAG）
+# 对话中可随时输入 /rag on 临时开启、/rag off 关闭
+use_rag = False
 
 print("AI Learning Coach 已启动")
 print("输入 exit 退出程序")
-print("输入 /rag off 或 /rag on 切换知识库检索")
+print("知识库检索默认关闭；输入 /rag on 可临时开启（/rag off 关闭）")
 
 
 while True:

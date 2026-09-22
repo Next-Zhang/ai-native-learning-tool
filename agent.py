@@ -43,11 +43,12 @@ RAG_SYSTEM_PROMPT = """
 """
 
 
-def chat_with_coach(user_input, history, use_rag=True, top_k=5):
+def chat_with_coach(user_input, history, use_rag=False, top_k=5):
     """与教练对话。
 
     use_rag=True 时，若问题与 Python 知识相关就先检索本地向量库，
     把检索结果作为参考资料注入，并要求模型标注来源。
+    默认 use_rag=False（暂时不调用 RAG），需要时由调用方显式开启。
 
     返回 (回答文本, 来源列表)。来源列表为空表示本次没有使用知识库。
     """
