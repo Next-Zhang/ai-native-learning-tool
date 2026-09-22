@@ -60,7 +60,7 @@ App_landing/
 |---|---|---|
 | V0.01 | DeepSeek 基础聊天（API/SDK/CLI） | ✅ 已完成 |
 | V0.1 | 持久化 Agent State（重启可续） | ✅ 已完成 |
-| V0.2 | 结构化用户画像（LLM 抽取 → 状态） | 进行中 |
+| V0.2 | 结构化用户画像（LLM 抽取 → 状态） | ✅ 已完成（抽取 + 合并 + 阶段推进 + 状态回灌） |
 | V0.3 | Agent 状态机（含能力测评） | 待开始 |
 | V0.4 | Human-in-the-loop | 待开始 |
 | V0.5 | Evaluation（学习效果评估） | 待开始 |
@@ -120,9 +120,39 @@ App_landing/
   要求模型优先依据资料回答、标注编号、资料不足时明说。
 - `chat_with_coach()` 返回 `(回答, 来源列表)`，`app.py` 据此打印来源章节。
 
+## V0.2 结构化用户画像
+
+从"能聊天"升级为"能把用户自然语言变成结构化状态"——这是 Chatbot 到 Agent 的分水岭。
+
+```text
+用户："我想一个月学 Python 数据分析，以前学过一点基础，每天能学 30 分钟"
+      ↓ extract_profile()  第二次 LLM 调用（JSON 模式 + Pydantic 校验）
+{"learning_goal":"Python 数据分析","current_level":"只学过一点基础",
+ "daily_minutes":30,"target_date":"一个月"}
+      ↓ merge_profile()    只合并非空字段（没提到的不覆盖已收集的信息）
+      ↓ maybe_advance_stage()
+四项齐全 → current_stage: goal_clarification → assessment
+```
+
+设计要点：
+- **增量抽取**：只解析最新一条用户消息，累积交给 `merge_profile`（避免历史重算与旧值覆盖新值）。
+- **空值不覆盖**：`None` 不写入 state —— "这轮没提到"≠"信息不存在"。
+- **阶段守卫**：`learning_goal / current_level / daily_minutes / target_date` 四项全齐才推进到 `assessment`。
+- **状态回灌**：把"已收集信息 + 仍缺失字段"注入对话，教练不再重复提问，只追问缺的那项。
+- **失败兜底**：抽取失败返回空画像并告警，绝不中断对话。
+
+新增/改动：`profile_extractor.py`（新增）、`state.py`（`merge_profile` / `profile_complete` / `maybe_advance_stage`）、
+`agent.py`（已知信息注入）、`app.py`（每轮抽取并打印画像进度）。
+
 ## 验收测试
 
 - **V0.1**：聊几轮 → `exit` → 重启程序 → 对话历史仍在（`data/user_state.json` 持久化）。
+- **V0.2**：自动抽取与状态推进
+  ```powershell
+  .\.venv\Scripts\python.exe tests\test_profile.py
+  ```
+  覆盖 schema 清洗、合并规则（空值不覆盖）、阶段守卫（缺一不推进 / 齐全必推进且幂等），
+  以及真实抽取用例（输入"我想一个月学习 Python 数据分析…每天能学 30 分钟"→ 抽到 4 字段并进入 `assessment`；未设置 `DEEPSEEK_API_KEY` 时自动跳过）。
 
 ## 许可证
 
