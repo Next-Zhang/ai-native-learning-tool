@@ -41,7 +41,11 @@ def describe_today_task(state) -> str:
         lines.append(f"- 预计时间：{task['minutes']} 分钟")
     if task.get("done_criteria"):
         lines.append(f"- 完成标准：{task['done_criteria']}")
-    lines.append("- 只围绕这一个任务讲解与引导；用户完成后请其提交结果，不要提前布置后面的任务")
+    lines.append("- 【权威】只围绕这一个任务讲解与引导；用户完成后请其提交结果，不要提前布置后面的任务")
+    lines.append(
+        "- 【防冲突】若你之前的回复里提到过别的任务、别的天数或别的主题，"
+        "一律以本条“今日任务”为准，不要沿用那段自述"
+    )
     return "\n".join(lines)
 
 
@@ -76,7 +80,7 @@ def detect_submission(state, user_input: str) -> SubmissionVerdict | None:
     )
 
     try:
-        data = client.json_call(SUBMISSION_SYSTEM_PROMPT, user_content)
+        data = client.json_call(SUBMISSION_SYSTEM_PROMPT, user_content, label="submission_detect")
         verdict = SubmissionVerdict(
             is_submission=bool(data.get("is_submission")),
             content=str(data.get("content") or ""),

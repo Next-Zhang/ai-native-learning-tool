@@ -38,7 +38,9 @@ def evaluate(state) -> EvaluationResult | None:
     )
 
     try:
-        data = client.json_call(EVALUATION_JUDGE_SYSTEM_PROMPT, user_content)
+        data = client.json_call(
+            EVALUATION_JUDGE_SYSTEM_PROMPT, user_content, label="evaluation_judge"
+        )
     except Exception as exc:                  # noqa: BLE001 —— 判定失败保持 evaluation
         print(f"[验收判定失败，保持在结果验收] {type(exc).__name__}: {exc}")
         return None

@@ -46,7 +46,9 @@ def ensure_plan(state) -> bool:
     )
 
     try:
-        data = client.json_call(ASSESSMENT_PLAN_SYSTEM_PROMPT, user_content)
+        data = client.json_call(
+            ASSESSMENT_PLAN_SYSTEM_PROMPT, user_content, label="assessment_plan"
+        )
         questions = normalize_plan(data.get("questions"), goal=goal)
     except Exception as exc:                      # noqa: BLE001 —— 出题失败必须有兜底
         print(f"[测评出题失败，已使用兜底大纲] {type(exc).__name__}: {exc}")
@@ -80,7 +82,9 @@ def record_answer(state, user_input: str, coach_reply: str) -> AnswerRecord | No
     )
 
     try:
-        data = client.json_call(ASSESSMENT_JUDGE_SYSTEM_PROMPT, user_content)
+        data = client.json_call(
+            ASSESSMENT_JUDGE_SYSTEM_PROMPT, user_content, label="assessment_judge"
+        )
     except Exception as exc:                      # noqa: BLE001 —— 判定失败保守记为 missing
         print(f"[测评判定失败，按 missing 记录] {type(exc).__name__}: {exc}")
         data = {"verdict": "missing", "answer": "", "note": "判定调用失败"}

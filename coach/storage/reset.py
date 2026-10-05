@@ -34,6 +34,7 @@ __all__ = [
     "reset_all",
     "reset_history",
     "reset_to_stage",
+    "save_to",
 ]
 
 
@@ -56,6 +57,11 @@ def _save(state: dict, state_file: Path) -> None:
         json.dumps(state, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+
+
+def save_to(state: dict, state_file: Path) -> None:
+    """把状态写到指定路径（供用例层注入临时路径，便于测试）。"""
+    _save(state, state_file)
 
 
 def clear_history(state: dict) -> int:

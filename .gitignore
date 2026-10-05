@@ -14,3 +14,7 @@ data/rag/
 evals/results/
 # 评测集可读总览（由 run_eval.py --export-md 生成的派生物）
 evals/*_overview.md
+# 指标事件（本机运行产物，可由 app 运行时重新采集）
+data/metrics/
+# 测试审计的结构化派生物（由 tests/audit.py --json 生成，可重生成；报告 .md 需提交）
+docs/test-audit.json

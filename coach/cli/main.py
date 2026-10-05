@@ -8,14 +8,18 @@ from coach.config import API_KEY_ENV, get_settings
 from coach.domain.cursor import get_progress
 from coach.domain.profile_rules import PROFILE_FIELDS
 from coach.domain.stages import stage_label
-from coach.domain.state_schema import DEFAULT_STATE
+from coach.metrics import recorder as metrics
 from coach.orchestration.turn import TurnResult, run_turn
 from coach.services.daily_task import describe_progress
+from coach.services.maintenance import SCOPE_ALL, SCOPE_HISTORY, perform_reset
 from coach.services.planning import is_confirmed
-from coach.storage import reset
-from coach.storage.state_store import load_state, save_state
+from coach.storage.state_store import load_state
 
-__all__ = ["main", "render_turn"]
+__all__ = ["ask_confirmation", "main", "render_turn"]
+
+# 确认提示接受的肯定/否定写法；其它一律视为"未确认"（fail-closed）
+_CONFIRM_YES = ("y", "yes", "是", "确认", "确定", "好", "可以")
+_CONFIRM_NO = ("n", "no", "否", "取消", "不", "不用", "不要")
 
 FIELD_LABELS = {
     "learning_goal": "学习目标",
@@ -131,6 +135,26 @@ def render_turn(result: TurnResult, state) -> None:
         print(f"[状态] 计划进度={describe_progress(state)}")
 
 
+def ask_confirmation(prompt: str) -> bool | None:
+    """CLI 的确认提示（S-08 的 `confirm_fn` 实现）。
+
+    - `y`/`是`/`确认` 等 → True
+    - `n`/`否`/`取消` 等 → False
+    - 其它（含直接回车、EOF、Ctrl+C）→ None，表示**未明确确认** → 按不执行处理
+    """
+    print(prompt)
+    try:
+        answer = input("你的选择 [y/N]：").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return None
+    if answer in _CONFIRM_YES:
+        return True
+    if answer in _CONFIRM_NO:
+        return False
+    return None
+
+
 def _handle_command(state, user_input: str, use_rag: bool):
     """处理 /rag 与 /reset；返回 (是否已处理, 新的 use_rag)。"""
     lowered = user_input.lower()
@@ -141,17 +165,10 @@ def _handle_command(state, user_input: str, use_rag: bool):
         return True, use_rag
 
     if lowered.startswith("/reset"):
-        if lowered.endswith("all"):
-            backup = reset.backup_state()
-            state.clear()
-            state.update(DEFAULT_STATE)
-            save_state(state)
-            print("[记忆] 已完全重置（回到目标澄清）"
-                  + (f"，旧状态备份于 {backup.name}" if backup else ""))
-        else:
-            cleared = reset.clear_history(state)
-            save_state(state)
-            print(f"[记忆] 已清空当前对话历史（{cleared} 条）；画像/计划/阶段保留")
+        # 删除学习历史属不可逆动作：走 S-08 确认门，拒绝/超时都不会删
+        scope = SCOPE_ALL if lowered.endswith("all") else SCOPE_HISTORY
+        outcome = perform_reset(state, scope, ask_confirmation)
+        print(outcome.message)
         return True, use_rag
 
     return False, use_rag
@@ -167,13 +184,18 @@ def main() -> int:
 
     state = load_state()
 
+    # 指标采集：库默认**关闭**（避免测试与工具误写真实指标文件），
+    # 由 CLI 启动时显式开启。事件写入 data/metrics/events.jsonl（PRD S-07）。
+    recorder = metrics.enable()
+
     # 知识库检索开关：当前**默认关闭**（先不调用 RAG）
     use_rag = False
 
     print("AI Learning Coach 已启动")
     print("输入 exit 退出程序")
     print("知识库检索默认关闭；输入 /rag on 可临时开启（/rag off 关闭）")
-    print("测试用：/reset 清空对话历史（保留画像与进度）；/reset all 完全重置")
+    print("测试用：/reset 清空对话历史（保留画像与进度）；/reset all 完全重置（两者都会先请你确认）")
+    print(f"指标采集：已开启 → {recorder.path}")
     print(f"当前状态：阶段={stage_label(state.get('current_stage'))} | {format_profile(state)}")
 
     while True:

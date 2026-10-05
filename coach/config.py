@@ -27,6 +27,18 @@ DEFAULT_TEMPERATURE = 0.0
 API_KEY_ENV = "DEEPSEEK_API_KEY"
 MODEL_ENV = "COACH_MODEL"
 BASE_URL_ENV = "COACH_BASE_URL"
+PRICE_IN_ENV = "COACH_PRICE_IN_PER_MTOK"
+PRICE_OUT_ENV = "COACH_PRICE_OUT_PER_MTOK"
+
+
+def _optional_float(raw) -> float | None:
+    """把环境变量解析成 float；空值或非法值返回 None（宁缺勿错）。"""
+    if raw is None or raw == "":
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
 
 
 class MissingApiKeyError(RuntimeError):
@@ -41,6 +53,11 @@ class Settings:
     base_url: str = DEFAULT_BASE_URL
     temperature: float = DEFAULT_TEMPERATURE
     api_key: str | None = None
+
+    # 计费单价（每百万 token）。**默认 None = 未知**：
+    # 本项目不编造价格，未配置时成本记为 null，只记录 token 用量。
+    price_in_per_mtok: float | None = None
+    price_out_per_mtok: float | None = None
 
     @property
     def has_api_key(self) -> bool:
@@ -67,6 +84,8 @@ def load_settings(env: dict | None = None) -> Settings:
         model=source.get(MODEL_ENV) or DEFAULT_MODEL,
         base_url=source.get(BASE_URL_ENV) or DEFAULT_BASE_URL,
         api_key=source.get(API_KEY_ENV),
+        price_in_per_mtok=_optional_float(source.get(PRICE_IN_ENV)),
+        price_out_per_mtok=_optional_float(source.get(PRICE_OUT_ENV)),
     )
 
 

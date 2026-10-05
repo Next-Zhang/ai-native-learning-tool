@@ -20,7 +20,6 @@ import json
 import shutil
 import sys
 import time
-import traceback
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -184,31 +183,14 @@ def test_no_backup_flag():
 
 
 # ---------------------------------------------------------------------------
-# 极简 runner
+# 极简 runner（共用实现见 tests/_runner.py）
 # ---------------------------------------------------------------------------
 
+from _runner import SkipTest, run_tests        # noqa: E402
+
+
 def main() -> int:
-    tests = [
-        value
-        for name, value in sorted(globals().items())
-        if name.startswith("test_") and callable(value)
-    ]
-
-    passed = failed = 0
-    for test in tests:
-        print(f"[RUN ] {test.__name__}")
-        try:
-            test()
-        except Exception as exc:                      # noqa: BLE001
-            failed += 1
-            print(f"[FAIL] {test.__name__}: {type(exc).__name__}: {exc}")
-            traceback.print_exc()
-        else:
-            passed += 1
-            print(f"[PASS] {test.__name__}")
-
-    print(f"\n结果：{passed} 通过 / {failed} 失败（共 {len(tests)} 个用例）")
-    return 1 if failed else 0
+    return run_tests(globals())
 
 
 if __name__ == "__main__":

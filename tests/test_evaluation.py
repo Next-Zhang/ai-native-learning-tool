@@ -17,7 +17,6 @@ r"""V0.3e 结果验收与画像更新验收测试（纯 Python 断言脚本）�
 import copy
 import os
 import sys
-import traceback
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -208,17 +207,25 @@ def test_guard_chain_evaluation_to_learning():
 
 
 def test_evaluate_without_llm_keeps_state():
-    if os.getenv("DEEPSEEK_API_KEY"):
-        print("        [跳过] 本用例仅在无 API Key 时验证失败兜底")
-        return
+    """强制"无 Key"环境（注入 `api_key=None`），验证失败兜底。
 
-    state = _evaluation_state()
-    result = evaluate(state)
+    不再依赖真实环境变量：以前写成 `if os.getenv(...): return`，
+    结果是**配了 Key 就什么都不验**（审计发现的反向守卫）。
+    """
+    from coach.config import Settings, get_settings, set_settings
 
-    assert result is None
-    assert state["latest_result"] is None                  # 绝不写入假判定
-    assert state["current_stage"] == STAGE_EVALUATION
-    assert try_advance(state) is None                      # 因此不能推进
+    original = get_settings()
+    set_settings(Settings(api_key=None))          # 模拟"无 Key"
+    try:
+        state = _evaluation_state()
+        result = evaluate(state)
+
+        assert result is None
+        assert state["latest_result"] is None                  # 绝不写入假判定
+        assert state["current_stage"] == STAGE_EVALUATION
+        assert try_advance(state) is None                      # 因此不能推进
+    finally:
+        set_settings(original)
 
 
 # ---------------------------------------------------------------------------
@@ -227,8 +234,7 @@ def test_evaluate_without_llm_keeps_state():
 
 def test_live_evaluate_pass_and_retry():
     if not os.getenv("DEEPSEEK_API_KEY"):
-        print("        [跳过] 未设置 DEEPSEEK_API_KEY，跳过真实验收判定")
-        return
+        raise SkipTest("未设置 DEEPSEEK_API_KEY，跳过真实验收判定")
 
     # 正确提交 -> completed / pass
     good = _evaluation_state(pending_submission={
@@ -254,31 +260,14 @@ def test_live_evaluate_pass_and_retry():
 
 
 # ---------------------------------------------------------------------------
-# 极简 runner
+# 极简 runner（共用实现见 tests/_runner.py）
 # ---------------------------------------------------------------------------
 
+from _runner import SkipTest, run_tests        # noqa: E402
+
+
 def main() -> int:
-    tests = [
-        value
-        for name, value in sorted(globals().items())
-        if name.startswith("test_") and callable(value)
-    ]
-
-    passed = failed = 0
-    for test in tests:
-        print(f"[RUN ] {test.__name__}")
-        try:
-            test()
-        except Exception as exc:                      # noqa: BLE001
-            failed += 1
-            print(f"[FAIL] {test.__name__}: {type(exc).__name__}: {exc}")
-            traceback.print_exc()
-        else:
-            passed += 1
-            print(f"[PASS] {test.__name__}")
-
-    print(f"\n结果：{passed} 通过 / {failed} 失败（共 {len(tests)} 个用例）")
-    return 1 if failed else 0
+    return run_tests(globals())
 
 
 if __name__ == "__main__":

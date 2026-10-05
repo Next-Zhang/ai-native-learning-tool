@@ -52,7 +52,7 @@ def generate_plan(state) -> list[dict]:
     )
 
     try:
-        data = client.json_call(PLAN_SYSTEM_PROMPT, user_content)
+        data = client.json_call(PLAN_SYSTEM_PROMPT, user_content, label="plan_generate")
         return normalize_plan_data(data, horizon, goal=goal, weak_points=weak,
                                    daily_minutes=minutes)
     except Exception as exc:                  # noqa: BLE001 —— 出计划失败必须有兜底
@@ -118,7 +118,7 @@ def confirm_plan(state, user_input: str) -> ConfirmationVerdict | None:
     )
 
     try:
-        data = client.json_call(CONFIRM_SYSTEM_PROMPT, user_content)
+        data = client.json_call(CONFIRM_SYSTEM_PROMPT, user_content, label="plan_confirm")
         verdict = ConfirmationVerdict(
             confirmed=bool(data.get("confirmed")),
             reason=str(data.get("reason") or ""),

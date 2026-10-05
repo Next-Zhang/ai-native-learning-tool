@@ -13,7 +13,6 @@ r"""V0.3a 状态机验收测试（纯 Python 断言脚本）。
 
 import copy
 import sys
-import traceback
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -199,31 +198,14 @@ def test_ensure_keys_does_not_share_mutable_defaults():
 
 
 # ---------------------------------------------------------------------------
-# 极简 runner
+# 极简 runner（共用实现见 tests/_runner.py）
 # ---------------------------------------------------------------------------
 
+from _runner import SkipTest, run_tests        # noqa: E402
+
+
 def main() -> int:
-    tests = [
-        value
-        for name, value in sorted(globals().items())
-        if name.startswith("test_") and callable(value)
-    ]
-
-    passed = failed = 0
-    for test in tests:
-        print(f"[RUN ] {test.__name__}")
-        try:
-            test()
-        except Exception as exc:                      # noqa: BLE001
-            failed += 1
-            print(f"[FAIL] {test.__name__}: {type(exc).__name__}: {exc}")
-            traceback.print_exc()
-        else:
-            passed += 1
-            print(f"[PASS] {test.__name__}")
-
-    print(f"\n结果：{passed} 通过 / {failed} 失败（共 {len(tests)} 个用例）")
-    return 1 if failed else 0
+    return run_tests(globals())
 
 
 if __name__ == "__main__":

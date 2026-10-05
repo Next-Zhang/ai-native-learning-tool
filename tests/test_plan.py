@@ -14,7 +14,6 @@ r"""V0.3c 学习计划验收测试（纯 Python 断言脚本）。
 import copy
 import os
 import sys
-import traceback
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -162,19 +161,26 @@ def test_guard_requires_confirmation():
 
 
 def test_confirm_plan_keeps_waiting_without_llm():
-    """没有可用的 LLM（无 Key）时：判定返回 None，且绝不误置确认标志。"""
-    if os.getenv("DEEPSEEK_API_KEY"):
-        print("        [跳过] 本用例仅在无 API Key 时验证失败兜底")
-        return
+    """没有可用的 LLM（无 Key）时：判定返回 None，且绝不误置确认标志。
 
-    state = _planning_state(
-        current_plan={"horizon_days": 7, "start_date": "2026-01-01",
-                      "days": [{"day": 1, "theme": "t", "tasks": [{"goal": "g"}]}]},
-        plan_confirmed=False,
-    )
-    verdict = confirm_plan(state, "可以，开始吧")
-    assert verdict is None
-    assert state["plan_confirmed"] is False
+    强制"无 Key"环境（注入 `api_key=None`），不依赖真实环境变量：
+    以前写成 `if os.getenv(...): return`，结果是**配了 Key 就什么都不验**。
+    """
+    from coach.config import Settings, get_settings, set_settings
+
+    original = get_settings()
+    set_settings(Settings(api_key=None))          # 模拟"无 Key"
+    try:
+        state = _planning_state(
+            current_plan={"horizon_days": 7, "start_date": "2026-01-01",
+                          "days": [{"day": 1, "theme": "t", "tasks": [{"goal": "g"}]}]},
+            plan_confirmed=False,
+        )
+        verdict = confirm_plan(state, "可以，开始吧")
+        assert verdict is None
+        assert state["plan_confirmed"] is False
+    finally:
+        set_settings(original)
 
 
 # ---------------------------------------------------------------------------
@@ -183,8 +189,7 @@ def test_confirm_plan_keeps_waiting_without_llm():
 
 def test_live_generate_plan():
     if not os.getenv("DEEPSEEK_API_KEY"):
-        print("        [跳过] 未设置 DEEPSEEK_API_KEY，跳过真实计划生成")
-        return
+        raise SkipTest("未设置 DEEPSEEK_API_KEY，跳过真实计划生成")
 
     state = _planning_state()
     assert ensure_plan(state) is True
@@ -205,8 +210,7 @@ def test_live_generate_plan():
 
 def test_live_confirmation_judgement():
     if not os.getenv("DEEPSEEK_API_KEY"):
-        print("        [跳过] 未设置 DEEPSEEK_API_KEY，跳过真实确认判定")
-        return
+        raise SkipTest("未设置 DEEPSEEK_API_KEY，跳过真实确认判定")
 
     plan = {"horizon_days": 7, "start_date": "2026-01-01",
             "days": [{"day": 1, "theme": "pandas 基础", "tasks": [{"goal": "读 CSV"}]}]}
@@ -227,31 +231,14 @@ def test_live_confirmation_judgement():
 
 
 # ---------------------------------------------------------------------------
-# 极简 runner
+# 极简 runner（共用实现见 tests/_runner.py）
 # ---------------------------------------------------------------------------
 
+from _runner import SkipTest, run_tests        # noqa: E402
+
+
 def main() -> int:
-    tests = [
-        value
-        for name, value in sorted(globals().items())
-        if name.startswith("test_") and callable(value)
-    ]
-
-    passed = failed = 0
-    for test in tests:
-        print(f"[RUN ] {test.__name__}")
-        try:
-            test()
-        except Exception as exc:                      # noqa: BLE001
-            failed += 1
-            print(f"[FAIL] {test.__name__}: {type(exc).__name__}: {exc}")
-            traceback.print_exc()
-        else:
-            passed += 1
-            print(f"[PASS] {test.__name__}")
-
-    print(f"\n结果：{passed} 通过 / {failed} 失败（共 {len(tests)} 个用例）")
-    return 1 if failed else 0
+    return run_tests(globals())
 
 
 if __name__ == "__main__":

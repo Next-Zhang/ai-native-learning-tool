@@ -42,6 +42,7 @@ App_landing/
 ├── coach/              # 主包（分层，依赖方向自上而下，见下节）
 │   ├── config.py           # Settings：模型/温度/base_url/Key（导入不抛错）
 │   ├── llm/                # client.py —— 唯一 LLM 入口（json_call / chat）
+│   ├── metrics/            # 事件采集（JSONL）/ 汇总 / 导出 CLI
 │   ├── domain/             # 纯逻辑：models / stages / *_rules / cursor / state_schema
 │   ├── prompts/            # 提示词集中：stages / tasks
 │   ├── services/           # 用例：profile / assessment / planning / daily_task / evaluation / coach
@@ -59,7 +60,7 @@ App_landing/
 │   ├── user_state.json
 │   └── rag/            # raw/ chunks.jsonl qdrant/ models/
 ├── evals/              # 评测集（dev/holdout）+ M-01 判分一致率 runner（详见下方章节）
-├── tests/              # 确定性回归测试（73 个用例）
+├── tests/              # 回归测试：116 个用例（109 确定性 + 7 真实模型）+ audit.py 审计工具
 └── .gitignore
 ```
 
@@ -71,6 +72,7 @@ App_landing/
 | 编排层 | `coach/orchestration/` | 单轮流程 `run_turn()` | 决定"先做什么后做什么"，不直接调 LLM |
 | 应用层 | `coach/services/` | 用例（抽取/测评/计划/任务/验收/对话） | 可调 LLM，**不做状态机推进、不落盘** |
 | 持久化 | `coach/storage/` | 状态读写与清理备份 | 只碰 `data/` |
+| 指标采集 | `coach/metrics/` | 事件记录、汇总、导出 | **fail-safe**：采集失败绝不影响主流程；默认关闭，CLI 启动时开启 |
 | 提示词 | `coach/prompts/` | 纯文本提示词 | 无逻辑 |
 | 模型访问 | `coach/llm/` | 唯一 LLM 出口 | **模型名只在此配置**（`coach/config.py`） |
 | 领域层 | `coach/domain/` | 纯逻辑（守卫、游标、聚合、清洗） | **无 IO、无 LLM、可单测** |
@@ -78,6 +80,7 @@ App_landing/
 两条历史包袱已消除：① 模型名原本硬编码在 6 个文件里，现只在 `coach/config.py` 定义一处；② `_json_call()` 原本在 5 个模块里各有一份，现只有 `coach/llm/client.py` 一份。
 
 > 分层的原因与取舍见 `docs/PRD.md` 的 **S-03（统一模型配置）** 与 §2.1 架构定性。
+> **完整的 agent 架构决策**（编排范式 / 能力注册表 / 三级自主权 / 感知契约，含 5 条不变量）见 [docs/architecture.md](docs/architecture.md)。
 
 #### 旧模块 → 新位置对照（V0.8 重构）
 
@@ -97,7 +100,7 @@ App_landing/
 | `reset.py` | `coach/storage/reset.py`（命令改为 `python -m coach.storage.reset`） |
 | `app.py`（252 行脚本） | `app.py`（薄入口）+ `coach/orchestration/turn.py`（单轮流程）+ `coach/cli/main.py`（界面渲染） |
 
-**不受影响**：`data/user_state.json` 的路径与 schema 未变（`ensure_keys` 仍能平滑升级旧文件），`rag/` 未改动，`tests/` 用例内容未变（仅导入路径更新）。
+**不受影响**：`data/user_state.json` 的路径与 schema 未变（`ensure_keys` 仍能平滑升级旧文件），`rag/` 未改动；`tests/` 的**已有用例内容未变**（重构只改了导入路径；后续新增文件见「验收测试」）。
 
 ## 路线图
 
@@ -107,8 +110,8 @@ App_landing/
 | V0.1 | 持久化 Agent State（重启可续） | ✅ 已完成 |
 | V0.2 | 结构化用户画像（LLM 抽取 → 状态） | ✅ 已完成（抽取 + 合并 + 阶段推进 + 状态回灌） |
 | V0.3 | Agent 状态机（含能力测评） | ✅ 已完成（V0.3a 骨架 / b 测评 / c 计划 / d 每日任务 / e 验收与画像更新） |
-| V0.4 | Human-in-the-loop | 待开始 |
-| V0.5 | Evaluation（学习效果评估） | 🔸 评测集（30 条 dev + 8 条 holdout）与 M-01 判分一致率 runner 已建立（`evals/`）；事件级指标采集与导出待做 |
+| V0.4 | Human-in-the-loop | 🔸 不可逆动作的**确认门已代码层强制**（S-08）：`/reset`、`/reset all` 改为先确认再删；重建计划 / 改目标 / 标记已掌握的业务路径待实现 |
+| V0.5 | Evaluation（学习效果评估） | 🔸 评测集（30 条 dev + 8 条 holdout）与 M-01 判分一致率 runner 已建立（`evals/`）；**事件级指标采集与导出已建立**（`coach/metrics/`）；阈值待基线 |
 | V0.6 | Tools（代码执行/检索/进度） | 🔸 Retrieval Tool 已实现（rag/tool.py） |
 | V0.7 | RAG / 知识库 | ✅ 本地向量库 + Agent 接入完成（recall@5=100%，回答带来源引用；**本期不在 MVP 范围**） |
 | V0.8 | **代码结构重构（分层包 `coach/`）** | ✅ 平铺模块 → 分层包（cli / orchestration / services / storage / prompts / llm / domain）；统一模型配置与 LLM 入口；73 个测试全绿 |
@@ -342,6 +345,35 @@ goal_clarification → assessment → planning → learning → evaluation → p
 
 ## 验收测试
 
+### 测试约定
+
+- **不用 pytest**：每个 `tests/test_*.py` 是一个可直接运行的脚本，末尾 `main()` 收集本文件的 `test_*` 函数。
+- **共用 runner**：[`tests/_runner.py`](tests/_runner.py)。每轮输出三种状态：
+
+  | 状态 | 含义 |
+  |---|---|
+  | `PASS` | 执行并通过 |
+  | `FAIL` | 执行并失败 |
+  | `SKIP` | **未执行**（如缺 `DEEPSEEK_API_KEY`），**不计入通过数** |
+
+- **live 用例必须显式跳过**：写作
+  ```python
+  if not os.getenv("DEEPSEEK_API_KEY"):
+      raise SkipTest("未设置 DEEPSEEK_API_KEY")
+  ```
+  **不要用 `return` 跳过** —— 那会让 runner 记成 `PASS`，报表"全绿"却掩盖了它从未运行。
+- **要验证"缺 Key 时的兜底"**，用注入而不是看环境：
+  ```python
+  set_settings(Settings(api_key=None))   # 再在 finally 里还原
+  ```
+  这样无论本机有没有 Key，用例都会真正执行。
+- **审计**：`python tests/audit.py` 按**断言对象**给用例分类（纯函数 / 行为 / 持久化 / 契约 / live），
+  并检查"跳过是否被当作通过"。报告见 [docs/test-audit.md](docs/test-audit.md)。
+
+当前读数（无 Key）：**109 通过 / 0 失败 / 7 跳过**；配 Key 时为 **116 通过 / 0 跳过**。
+
+### 各版本用例
+
 - **V0.1**：聊几轮 → `exit` → 重启程序 → 对话历史仍在（`data/user_state.json` 持久化）。
 - **V0.2**：自动抽取与状态推进
   ```powershell
@@ -395,6 +427,55 @@ goal_clarification → assessment → planning → learning → evaluation → p
   `reset_history`（清历史但保留画像/计划/阶段/进度）、`reset_to_stage`（非法阶段抛错且不写文件）、
   state 文件缺失时安全重建、备份只保留最近 N 份、`--no-backup` 不产生备份。
   （临时文件建在 `tests/.tmp/`，不写系统临时目录，也不碰真实状态文件。）
+- **V0.4 / S-08：不可逆动作的确认门（HITL）**
+  ```powershell
+  .\.venv\Scripts\python.exe tests\test_confirmation.py
+  ```
+  覆盖四个受保护动作（重建计划 / 修改长期目标 / 删除历史 / 标记已掌握）全部登记、
+  明确确认才放行、**拒绝 / 超时 / 确认通道异常一律不执行**（fail-closed）、
+  **未登记动作直接抛错**（不可绕过）、被拒或超时后 **state 与状态文件完全不变**、
+  确认通过后才真正清理，以及 `/reset all` **不与 `DEFAULT_STATE` 共享可变对象**。
+  对应 PRD 测试矩阵 **T-10**。
+- **S-07：指标采集与导出**
+  ```powershell
+  .\.venv\Scripts\python.exe tests\test_metrics.py
+  ```
+  覆盖 PRD §3.5 规定的字段齐全、默认关闭、**采集 fail-safe**（路径不可写也不抛异常）、
+  LLM 调用计数与阶段归属、**未配置单价时成本为 `null`**（不编造价格）、
+  汇总（token 合计 / p50-p95 延迟 / **每轮 LLM 调用次数** / 结果与确认门分布）、
+  损坏行容错、CSV 与 JSONL 导出。
+- **对话装配与单轮编排（真实运行缺陷回归）**
+  ```powershell
+  .\.venv\Scripts\python.exe tests\test_dialogue.py
+  ```
+  锁死两个**在真实 API 会话里实测发生**的缺陷：**① 教练抢答判定**——AI 抢在代码判定之前
+  自行宣布"验收结果：通过 ✅"，而下一轮系统判的是"部分完成"，用户先后被给出矛盾结论；
+  **② 教练自述覆盖状态**——模型沿用历史里自己编的任务，无视注入的真实任务。
+  用例覆盖：对话必须使用**本轮起始阶段**提示词、提交轮不得把提交正文交给模型评判、
+  权威状态必须排在对话历史**之后**、画像齐全后不再每轮空跑抽取。
+
+## 指标采集与导出（`coach/metrics/`）
+
+每轮交互会写一条本机 JSONL 事件到 `data/metrics/events.jsonl`，供 PRD 的
+M-03（token 成本）、M-04（P95 延迟）与 §8 护栏（**平均每轮 LLM 调用次数**）读数。字段见
+[PRD §3.5](docs/PRD.md)。
+
+```powershell
+# 只看汇总（token / 成本 / p50-p95 延迟 / 每轮调用次数 / 判定与确认门分布）
+.\.venv\Scripts\python.exe -m coach.metrics.export
+
+# 导出原始事件
+.\.venv\Scripts\python.exe -m coach.metrics.export --out data\metrics\events.csv
+.\.venv\Scripts\python.exe -m coach.metrics.export --format jsonl --out data\metrics\events.jsonl
+```
+
+三条纪律：
+
+- **采集绝不影响主流程**：写入失败只累加内部错误计数，不抛异常、不打断对话。
+- **不编造价格**：默认只记 token 用量，`cost` 为 `null`；要用成本就自己配置单价
+  （`COACH_PRICE_IN_PER_MTOK` / `COACH_PRICE_OUT_PER_MTOK`）。
+- **默认关闭**：库被导入时不采集（避免测试与工具误写真实指标文件）；
+  `python app.py` 启动时自动开启，也可用 `COACH_METRICS=on` 强制开启。
 
 ## 评测（evals/）
 

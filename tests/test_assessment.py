@@ -15,7 +15,6 @@ r"""V0.3b 能力测评验收测试（纯 Python 断言脚本）。
 import copy
 import os
 import sys
-import traceback
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -185,8 +184,7 @@ def test_finalize_writes_profile_and_unlocks_next_stage():
 def test_live_plan_generation():
     """真实出题：只断言大纲结构（题量、主题非空、难度递增）。"""
     if not os.getenv("DEEPSEEK_API_KEY"):
-        print("        [跳过] 未设置 DEEPSEEK_API_KEY，跳过真实出题用例")
-        return
+        raise SkipTest("未设置 DEEPSEEK_API_KEY，跳过真实出题用例")
 
     from coach.services.assessment import ensure_plan
 
@@ -211,8 +209,7 @@ def test_live_judgement():
     固定答案会与题目不符（这本身也说明判卷器是看题的）。
     """
     if not os.getenv("DEEPSEEK_API_KEY"):
-        print("        [跳过] 未设置 DEEPSEEK_API_KEY，跳过真实判卷用例")
-        return
+        raise SkipTest("未设置 DEEPSEEK_API_KEY，跳过真实判卷用例")
 
     from coach.services.assessment import record_answer
 
@@ -235,31 +232,14 @@ def test_live_judgement():
 
 
 # ---------------------------------------------------------------------------
-# 极简 runner
+# 极简 runner（共用实现见 tests/_runner.py）
 # ---------------------------------------------------------------------------
 
+from _runner import SkipTest, run_tests        # noqa: E402
+
+
 def main() -> int:
-    tests = [
-        value
-        for name, value in sorted(globals().items())
-        if name.startswith("test_") and callable(value)
-    ]
-
-    passed = failed = 0
-    for test in tests:
-        print(f"[RUN ] {test.__name__}")
-        try:
-            test()
-        except Exception as exc:                      # noqa: BLE001
-            failed += 1
-            print(f"[FAIL] {test.__name__}: {type(exc).__name__}: {exc}")
-            traceback.print_exc()
-        else:
-            passed += 1
-            print(f"[PASS] {test.__name__}")
-
-    print(f"\n结果：{passed} 通过 / {failed} 失败（共 {len(tests)} 个用例）")
-    return 1 if failed else 0
+    return run_tests(globals())
 
 
 if __name__ == "__main__":

@@ -21,7 +21,7 @@ from typing import Any
 
 from coach.domain.assessment_rules import finalize, is_finished
 from coach.domain.cursor import build_today_task, is_plan_finished
-from coach.domain.profile_rules import merge_profile
+from coach.domain.profile_rules import merge_profile, profile_complete
 from coach.domain.stages import (
     STAGE_ASSESSMENT,
     STAGE_EVALUATION,
@@ -29,6 +29,7 @@ from coach.domain.stages import (
     STAGE_PLANNING,
     try_advance,
 )
+from coach.metrics import recorder as metrics
 from coach.services import assessment, daily_task, evaluation, planning, profile
 from coach.services.coach import chat_with_coach
 from coach.storage.state_store import save_state
@@ -89,8 +90,16 @@ def run_turn(state, user_input: str, use_rag: bool = False) -> TurnResult:
         stage_before=state.get("current_stage", ""),
     )
 
+    # 指标归属：本轮内的 LLM 调用都记在本轮**起始阶段**下（近似但足够定位）
+    metrics.set_stage(result.stage_before)
+
     # ① 画像抽取 → 合并（空值不覆盖）
-    result.updated_fields = merge_profile(state, profile.extract_profile(user_input))
+    #    只在**画像未齐**时抽取：四项齐全后每轮再抽一次既没有可测收益，
+    #    又占掉约 1/3 的调用量（违反“每步 LLM 调用必须能说明可测收益”）。
+    if profile_complete(state):
+        result.updated_fields = []
+    else:
+        result.updated_fields = merge_profile(state, profile.extract_profile(user_input))
 
     # ② 计划阶段：先判定确认，再确保计划已生成
     if state.get("current_stage") == STAGE_PLANNING:
@@ -124,11 +133,14 @@ def run_turn(state, user_input: str, use_rag: bool = False) -> TurnResult:
             result.assessment_topics = [q.get("topic", "") for q in plan_questions]
 
     # ⑦ 让教练带着最新状态对话
+    #    注意传 **stage_before**：状态机在本轮可能已经推进（例如"用户刚提交"→ evaluation），
+    #    但教练此刻仍应按**本轮起始阶段**说话；否则它会抢在代码判定之前自己宣布验收结论。
     answer, sources = chat_with_coach(
         user_input=user_input,
         history=state["conversation_history"],
         use_rag=use_rag,
         state=state,
+        stage=result.stage_before,
     )
     result.answer = answer
     result.sources = sources
@@ -162,4 +174,13 @@ def run_turn(state, user_input: str, use_rag: bool = False) -> TurnResult:
     save_state(state)
 
     result.stage_after = state.get("current_stage", "")
+
+    # 一轮结束事件：用于按轮聚合（如 §8 护栏"平均每轮 LLM 调用次数"）
+    metrics.record(
+        metrics.EVENT_TURN,
+        stage=result.stage_before,
+        label=f"{result.stage_before}->{result.stage_after}",
+        result="ok",
+        verdict=None,
+    )
     return result

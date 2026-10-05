@@ -20,7 +20,7 @@ def extract_profile(user_input: str) -> UserProfile:
         return UserProfile()
 
     try:
-        data = client.json_call(EXTRACT_SYSTEM_PROMPT, text)
+        data = client.json_call(EXTRACT_SYSTEM_PROMPT, text, label="profile_extract")
         return UserProfile.model_validate(data)
     except Exception as exc:            # noqa: BLE001 —— 抽取失败绝不能中断对话
         print(f"[画像抽取失败，本轮已跳过] {type(exc).__name__}: {exc}")
