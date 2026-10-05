@@ -19,19 +19,17 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from planner import (
+from coach.domain.plan_rules import (
     DEFAULT_HORIZON_DAYS,
     MAX_TASKS_PER_DAY,
-    confirm_plan,
-    ensure_plan,
     fallback_plan,
-    is_confirmed,
     normalize_plan_data,
     parse_target_days,
     plan_horizon,
 )
-from stages import try_advance
-from state import DEFAULT_STATE, STAGE_LEARNING, STAGE_PLANNING
+from coach.domain.stages import STAGE_LEARNING, STAGE_PLANNING, try_advance
+from coach.domain.state_schema import DEFAULT_STATE
+from coach.services.planning import confirm_plan, ensure_plan, is_confirmed
 
 
 def _planning_state(**extra) -> dict:

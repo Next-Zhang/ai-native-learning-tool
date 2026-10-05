@@ -1,17 +1,15 @@
-"""reset.py —— 状态清理工具（测试阶段用）。
+"""状态清理工具（原 `reset.py`，测试阶段用）。
 
-只操作 data/user_state.json（以及 data/backups/ 里的备份），
-绝不触碰 .venv、向量库、embedding 模型。
+只操作 `data/user_state.json`（以及 `data/backups/` 里的备份），
+**绝不触碰** `.venv`、向量库、embedding 模型。
 
 三种用法：
-    python reset.py                  # 完全重置（回默认状态，等于删掉 state）
-    python reset.py --history        # 只清空对话历史（保留画像 / 计划 / 阶段）
-    python reset.py --stage assessment   # 重置并直接跳到指定阶段（分段测试）
+    python -m coach.storage.reset                  # 完全重置（回默认状态）
+    python -m coach.storage.reset --history        # 只清空对话历史（保留画像 / 计划 / 阶段）
+    python -m coach.storage.reset --stage assessment   # 重置并跳到指定阶段（分段测试）
 
-默认每次清理前会自动备份到 data/backups/user_state_<时间戳>.json，
+默认每次清理前会自动备份到 `data/backups/user_state_<时间戳>.json`，
 并只保留最近 5 份，避免备份越堆越多。
-
-也可作为模块被 app.py 复用（/reset 与 /reset all 命令）。
 """
 
 import argparse
@@ -20,11 +18,23 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 
-from state import DEFAULT_STATE, STATE_FILE
-from stages import ALL_STAGES
+from coach.config import DATA_DIR
+from coach.domain.stages import ALL_STAGES
+from coach.domain.state_schema import DEFAULT_STATE
+from coach.storage.state_store import STATE_FILE
 
-BACKUP_DIR = Path(__file__).resolve().parent / "data" / "backups"
+BACKUP_DIR = DATA_DIR / "backups"
 KEEP_BACKUPS = 5
+
+__all__ = [
+    "BACKUP_DIR",
+    "KEEP_BACKUPS",
+    "backup_state",
+    "clear_history",
+    "reset_all",
+    "reset_history",
+    "reset_to_stage",
+]
 
 
 # ---------------------------------------------------------------------------

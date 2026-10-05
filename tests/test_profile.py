@@ -19,14 +19,15 @@ from pathlib import Path
 # 允许以脚本方式直接运行（把项目根目录加入 import 路径）
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from profile_extractor import UserProfile, extract_profile
-from stages import try_advance
-from state import (
-    DEFAULT_STATE,
+from coach.domain.models import UserProfile
+from coach.domain.profile_rules import (
     merge_profile,
     missing_profile_fields,
     profile_complete,
 )
+from coach.domain.stages import try_advance
+from coach.domain.state_schema import DEFAULT_STATE
+from coach.services.profile import extract_profile
 
 
 def fresh_state() -> dict:

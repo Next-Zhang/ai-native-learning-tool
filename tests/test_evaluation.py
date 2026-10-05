@@ -22,16 +22,20 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from evaluator import (
-    EvaluationResult,
-    apply_update,
+from coach.domain.evaluation_rules import (
     completion_score,
-    evaluate,
     normalize_action,
     normalize_error_types,
 )
-from stages import try_advance
-from state import DEFAULT_STATE, STAGE_EVALUATION, STAGE_LEARNING, STAGE_PROFILE_UPDATE
+from coach.domain.models import EvaluationResult
+from coach.domain.stages import (
+    STAGE_EVALUATION,
+    STAGE_LEARNING,
+    STAGE_PROFILE_UPDATE,
+    try_advance,
+)
+from coach.domain.state_schema import DEFAULT_STATE
+from coach.services.evaluation import apply_update, evaluate
 
 
 def _plan() -> dict:

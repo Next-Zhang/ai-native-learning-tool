@@ -18,31 +18,26 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from stages import (
+from coach.domain.stages import (
     ALL_STAGES,
-    DEFAULT_PROMPT,
     EXIT_STAGES,
     STAGES,
+    STAGE_ASSESSMENT,
+    STAGE_EVALUATION,
+    STAGE_GOAL_CLARIFICATION,
     STAGE_LABELS,
-    STAGE_PROMPTS,
+    STAGE_LEARNING,
+    STAGE_PLANNING,
+    STAGE_PROFILE_UPDATE,
     TRANSITIONS,
     blocked_reason,
     can_advance,
     pending_transition,
     stage_label,
-    stage_prompt,
     try_advance,
 )
-from state import (
-    DEFAULT_STATE,
-    STAGE_ASSESSMENT,
-    STAGE_EVALUATION,
-    STAGE_GOAL_CLARIFICATION,
-    STAGE_LEARNING,
-    STAGE_PLANNING,
-    STAGE_PROFILE_UPDATE,
-    ensure_keys,
-)
+from coach.domain.state_schema import DEFAULT_STATE, ensure_keys
+from coach.prompts.stages import DEFAULT_PROMPT, STAGE_PROMPTS, stage_prompt
 
 
 def _state_at(stage: str, **extra) -> dict:

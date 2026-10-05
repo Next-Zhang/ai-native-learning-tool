@@ -37,22 +37,67 @@ python app.py
 
 ```
 App_landing/
-├── app.py          # CLI 主循环
-├── agent.py        # LLM 调用 + 教练 System Prompt
-├── config.py       # DeepSeek 配置（API Key 从环境变量读取）
-├── state.py        # 状态持久化（JSON）
-├── rag/            # RAG / 知识库（详见下方章节）
+├── app.py              # 薄入口：from coach.cli.main import main
+├── pyproject.toml      # 项目元数据与依赖（可选 pip install -e .）
+├── coach/              # 主包（分层，依赖方向自上而下，见下节）
+│   ├── config.py           # Settings：模型/温度/base_url/Key（导入不抛错）
+│   ├── llm/                # client.py —— 唯一 LLM 入口（json_call / chat）
+│   ├── domain/             # 纯逻辑：models / stages / *_rules / cursor / state_schema
+│   ├── prompts/            # 提示词集中：stages / tasks
+│   ├── services/           # 用例：profile / assessment / planning / daily_task / evaluation / coach
+│   ├── storage/            # state_store.py（读写）/ reset.py（清理与备份）
+│   ├── orchestration/      # turn.py —— 单轮流程 run_turn()
+│   └── cli/                # main.py —— 终端界面
+├── rag/                # RAG / 知识库（本期不在 MVP 范围；详见下方章节）
 │   ├── crawl.py        # 爬虫：抓 runoob Python3 教程 → data/rag/raw/*.json
 │   ├── chunk.py        # 切块：raw → data/rag/chunks.jsonl（按 token，≤350）
 │   ├── embeddings.py   # 本地 BGE-M3 向量化引擎（onnxruntime，无 torch）
 │   ├── embed_store.py  # 向量化并写入 Qdrant 本地库
 │   ├── retrieve.py     # 检索：query → top-k（含 recall@k 自检）
 │   └── build.py        # 一键管道：crawl → chunk → store
-├── data/           # 用户状态 + RAG 产物（均不提交）
+├── data/               # 用户状态 + RAG 产物（均不提交）
 │   ├── user_state.json
-│   └── rag/        # raw/ chunks.jsonl qdrant/ models/
+│   └── rag/            # raw/ chunks.jsonl qdrant/ models/
+├── evals/              # 评测集（dev/holdout）+ M-01 判分一致率 runner（详见下方章节）
+├── tests/              # 确定性回归测试（73 个用例）
 └── .gitignore
 ```
+
+### 代码分层（依赖方向自上而下，下层不依赖上层）
+
+| 层 | 目录 | 职责 | 约束 |
+|---|---|---|---|
+| 接口层 | `coach/cli/` | 终端交互与渲染 | 只读 `TurnResult`，不含业务逻辑 |
+| 编排层 | `coach/orchestration/` | 单轮流程 `run_turn()` | 决定"先做什么后做什么"，不直接调 LLM |
+| 应用层 | `coach/services/` | 用例（抽取/测评/计划/任务/验收/对话） | 可调 LLM，**不做状态机推进、不落盘** |
+| 持久化 | `coach/storage/` | 状态读写与清理备份 | 只碰 `data/` |
+| 提示词 | `coach/prompts/` | 纯文本提示词 | 无逻辑 |
+| 模型访问 | `coach/llm/` | 唯一 LLM 出口 | **模型名只在此配置**（`coach/config.py`） |
+| 领域层 | `coach/domain/` | 纯逻辑（守卫、游标、聚合、清洗） | **无 IO、无 LLM、可单测** |
+
+两条历史包袱已消除：① 模型名原本硬编码在 6 个文件里，现只在 `coach/config.py` 定义一处；② `_json_call()` 原本在 5 个模块里各有一份，现只有 `coach/llm/client.py` 一份。
+
+> 分层的原因与取舍见 `docs/PRD.md` 的 **S-03（统一模型配置）** 与 §2.1 架构定性。
+
+#### 旧模块 → 新位置对照（V0.8 重构）
+
+下方 **V0.2–V0.3e 章节按当时的文件名**记录（那是历史事实，未改写）；若要照它找代码，请用本表换算：
+
+| 旧模块（已删除） | 新位置 |
+|---|---|
+| `agent.py` | `coach/services/coach.py`（消息组装）+ `coach/llm/client.py`（模型调用） |
+| `config.py` | `coach/config.py`（`Settings`；**导入不再抛错**） |
+| `profile_extractor.py` | `coach/services/profile.py`（抽取）+ `coach/domain/models.py`（`UserProfile`） |
+| `assessor.py` | `coach/domain/assessment_rules.py`（判定映射/聚合/薄弱点）+ `coach/services/assessment.py`（出题/判分） |
+| `planner.py` | `coach/domain/plan_rules.py`（期限/窗口/清洗/兜底）+ `coach/services/planning.py`（生成/确认） |
+| `daily.py` | `coach/domain/cursor.py`（游标/任务查找）+ `coach/services/daily_task.py`（展示/提交识别） |
+| `evaluator.py` | `coach/domain/evaluation_rules.py`（完成度/动作一致性）+ `coach/services/evaluation.py`（判定/画像更新） |
+| `state.py` | `coach/domain/state_schema.py`（schema + `ensure_keys`）/ `coach/domain/profile_rules.py`（画像合并）/ `coach/storage/state_store.py`（读写） |
+| `stages.py` | `coach/domain/stages.py`（阶段常量/守卫/转换）+ `coach/prompts/stages.py`（阶段提示词） |
+| `reset.py` | `coach/storage/reset.py`（命令改为 `python -m coach.storage.reset`） |
+| `app.py`（252 行脚本） | `app.py`（薄入口）+ `coach/orchestration/turn.py`（单轮流程）+ `coach/cli/main.py`（界面渲染） |
+
+**不受影响**：`data/user_state.json` 的路径与 schema 未变（`ensure_keys` 仍能平滑升级旧文件），`rag/` 未改动，`tests/` 用例内容未变（仅导入路径更新）。
 
 ## 路线图
 
@@ -63,9 +108,10 @@ App_landing/
 | V0.2 | 结构化用户画像（LLM 抽取 → 状态） | ✅ 已完成（抽取 + 合并 + 阶段推进 + 状态回灌） |
 | V0.3 | Agent 状态机（含能力测评） | ✅ 已完成（V0.3a 骨架 / b 测评 / c 计划 / d 每日任务 / e 验收与画像更新） |
 | V0.4 | Human-in-the-loop | 待开始 |
-| V0.5 | Evaluation（学习效果评估） | 待开始 |
+| V0.5 | Evaluation（学习效果评估） | 🔸 评测集（30 条 dev + 8 条 holdout）与 M-01 判分一致率 runner 已建立（`evals/`）；事件级指标采集与导出待做 |
 | V0.6 | Tools（代码执行/检索/进度） | 🔸 Retrieval Tool 已实现（rag/tool.py） |
-| V0.7 | RAG / 知识库 | ✅ 本地向量库 + Agent 接入完成（recall@5=100%，回答带来源引用） |
+| V0.7 | RAG / 知识库 | ✅ 本地向量库 + Agent 接入完成（recall@5=100%，回答带来源引用；**本期不在 MVP 范围**） |
+| V0.8 | **代码结构重构（分层包 `coach/`）** | ✅ 平铺模块 → 分层包（cli / orchestration / services / storage / prompts / llm / domain）；统一模型配置与 LLM 入口；73 个测试全绿 |
 | V1.0 | Web MVP | 后续 |
 
 ## RAG / 知识库（rag/）
@@ -281,13 +327,13 @@ goal_clarification → assessment → planning → learning → evaluation → p
 /reset all    完全重置（回到目标澄清；会先自动备份）
 ```
 
-命令行工具（`reset.py`，退出程序后使用）：
+命令行工具（`coach.storage.reset`，退出程序后使用）：
 
 ```powershell
-.\.venv\Scripts\python.exe reset.py                    # 完全重置
-.\.venv\Scripts\python.exe reset.py --history          # 只清对话历史
-.\.venv\Scripts\python.exe reset.py --stage assessment # 重置并跳到指定阶段（分段测试）
-.\.venv\Scripts\python.exe reset.py --no-backup        # 清理前不备份
+.\.venv\Scripts\python.exe -m coach.storage.reset                    # 完全重置
+.\.venv\Scripts\python.exe -m coach.storage.reset --history          # 只清对话历史
+.\.venv\Scripts\python.exe -m coach.storage.reset --stage assessment # 重置并跳到指定阶段（分段测试）
+.\.venv\Scripts\python.exe -m coach.storage.reset --no-backup        # 清理前不备份
 ```
 
 - 每次清理前自动备份到 `data/backups/user_state_<时间戳>.json`，**只保留最近 5 份**
@@ -349,6 +395,30 @@ goal_clarification → assessment → planning → learning → evaluation → p
   `reset_history`（清历史但保留画像/计划/阶段/进度）、`reset_to_stage`（非法阶段抛错且不写文件）、
   state 文件缺失时安全重建、备份只保留最近 N 份、`--no-backup` 不产生备份。
   （临时文件建在 `tests/.tmp/`，不写系统临时目录，也不碰真实状态文件。）
+
+## 评测（evals/）
+
+`tests/` 覆盖**确定性逻辑**（状态机守卫、计划清洗、分数聚合、阈值…）；`evals/` 覆盖**无法用断言固定的模型判定**，用于度量 **M-01 判分一致率**。两者互补，不重复。
+
+只评 5 个 LLM 判定点：`assessment_verdict` / `evaluation_completion` / `submission_detect` / `plan_confirm` / `profile_extract`。
+
+```powershell
+# dry-run（默认）：只校验数据集格式与分布，不调模型、不花钱
+.\.venv\Scripts\python.exe evals\run_eval.py
+.\.venv\Scripts\python.exe evals\run_eval.py --dataset holdout
+
+# 真实评测（需要 DEEPSEEK_API_KEY）
+.\.venv\Scripts\python.exe evals\run_eval.py --live
+.\.venv\Scripts\python.exe evals\run_eval.py --live --repeat 3 --format csv --out evals\results\m01.csv
+```
+
+三条纪律：
+
+- **dev 与 holdout 分离**：调提示词只看 `dev.jsonl`；`holdout.jsonl` 只用于发布判断，跑 `--live` 需显式加 `--allow-holdout`（防泄漏）。
+- **分层阅读**：报告给出按 judge / domain / risk 的分层一致率——总体均值不得掩盖分层失败。
+- **error 单列**：模型调用失败计入 `error`、不计入一致率分母，并醒目告警，避免把"接口挂了"误读成"判得准"。
+
+阈值 **M-01 ≥90% 仍为「待定」**（先测基线再定）。详见 `evals/README.md` 与 `evals/schema.md`。
 
 ## 许可证
 

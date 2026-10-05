@@ -10,3 +10,7 @@ data/backups/
 tests/.tmp/
 # RAG 产物：语料 / 切块 / Qdrant 库 / embedding 模型（大，且可由脚本重建）
 data/rag/
+# 评测 run 结果（可重新生成；评测集本身 evals/dataset/ 需提交）
+evals/results/
+# 评测集可读总览（由 run_eval.py --export-md 生成的派生物）
+evals/*_overview.md

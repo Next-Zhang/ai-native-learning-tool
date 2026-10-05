@@ -22,19 +22,18 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from daily import (
+from coach.domain.cursor import (
     build_today_task,
-    describe_progress,
-    detect_submission,
+    first_valid_position,
     get_progress,
     is_plan_finished,
     lookup_task,
     mark_task_done,
     next_position,
-    first_valid_position,
 )
-from stages import try_advance
-from state import DEFAULT_STATE, STAGE_EVALUATION, STAGE_LEARNING
+from coach.domain.stages import STAGE_EVALUATION, STAGE_LEARNING, try_advance
+from coach.domain.state_schema import DEFAULT_STATE
+from coach.services.daily_task import describe_progress, detect_submission
 
 
 def _plan(days=None) -> dict:

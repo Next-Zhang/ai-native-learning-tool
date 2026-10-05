@@ -26,7 +26,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from reset import (
+from coach.domain.state_schema import DEFAULT_STATE
+from coach.storage.reset import (
     KEEP_BACKUPS,
     backup_state,
     clear_history,
@@ -34,7 +35,6 @@ from reset import (
     reset_history,
     reset_to_stage,
 )
-from state import DEFAULT_STATE
 
 TMP_ROOT = Path(__file__).resolve().parent / ".tmp"
 

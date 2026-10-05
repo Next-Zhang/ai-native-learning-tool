@@ -20,10 +20,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from assessor import (
+from coach.domain.assessment_rules import (
     MAX_QUESTIONS,
     WEAK_THRESHOLD,
-    AnswerRecord,
     aggregate_scores,
     current_index,
     derive_weak_points,
@@ -32,8 +31,9 @@ from assessor import (
     normalize_plan,
     verdict_score,
 )
-from stages import try_advance
-from state import DEFAULT_STATE, STAGE_ASSESSMENT
+from coach.domain.models import AnswerRecord
+from coach.domain.stages import STAGE_ASSESSMENT, try_advance
+from coach.domain.state_schema import DEFAULT_STATE
 
 
 def _assessment_state(records=None, questions=None) -> dict:
@@ -188,7 +188,7 @@ def test_live_plan_generation():
         print("        [跳过] 未设置 DEEPSEEK_API_KEY，跳过真实出题用例")
         return
 
-    from assessor import ensure_plan
+    from coach.services.assessment import ensure_plan
 
     state = copy.deepcopy(DEFAULT_STATE)
     state.update({"learning_goal": "Python 数据分析", "current_level": "学过一点基础",
@@ -214,7 +214,7 @@ def test_live_judgement():
         print("        [跳过] 未设置 DEEPSEEK_API_KEY，跳过真实判卷用例")
         return
 
-    from assessor import record_answer
+    from coach.services.assessment import record_answer
 
     state = _assessment_state(
         questions=[
