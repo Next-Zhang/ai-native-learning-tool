@@ -4,9 +4,42 @@
 
 ## 这是什么
 
-- **不是聊天机器人**：围绕「目标澄清 → 能力测评 → 学习计划 → 今日任务 → 结果验收 → 画像更新 → 动态调整」的闭环运转，并带**复习系统**（间隔重复，对抗遗忘）。
-- **以验收为准**：学习者说「我会了」不算掌握，通过任务验收才算。
-- **当前进度**：V0.01（DeepSeek 基础聊天）✅ / V0.1（持久化对话状态）✅ —— 已从「能聊天」升级为「能记住用户状态」。
+- **不是聊天机器人**：围绕「目标澄清 → 能力测评 → 学习计划 → 学习任务 → 结果验收 → 画像更新 → 动态调整」的闭环运转。
+- **以验收为准**：学习者说「我会了」不算掌握，通过任务验收才算。验收强度**按你的时间预算分档**（L1 复述/解释 → L3 独立产出）。
+- **为碎片化时间设计**：基本单位是**「次」而不是「天」**——长期**路线图**（目标→里程碑）+ 短期**执行窗口**（一次一个能做完的小单元），窗口走完自动滚动并按你的实际速度重估。
+- **当前进度**：**v0.14**，闭环已用 4 次真实 API 会话验证；**182 个测试**（175 确定性 + 7 依赖真实模型）。
+
+## 文档索引
+
+| 想知道什么 | 看哪里 |
+|---|---|
+| **产品需求 / 用户 / 指标 / 验收**（唯一事实来源） | [docs/PRD.md](docs/PRD.md)（当前 **v0.14**） |
+| **架构决策 / 10 条不变量 / 框架完成度**（改代码前必读） | [docs/architecture.md](docs/architecture.md)（含**附录 A：框架缺口清单**） |
+| 测试质量与覆盖结构（按断言对象分层） | [docs/test-audit.md](docs/test-audit.md) |
+| 运行方式、测试约定、**怎么加一个新能力** | 本文件下方 |
+
+> `docs/PRD.md` 与 `docs/architecture.md` 是**唯一事实来源**，其余文档若与之冲突以它们为准。
+
+## 给 AI 助手的开场指令
+
+```text
+接手 AI Native Learning Tool（学习教练 Agent）。仓库根 = 当前目录。
+
+先读（按序，不要跳过）：
+1. docs/architecture.md  —— 架构决策 + 10 条不变量（I-1…I-10）+ 附录 A 框架缺口
+2. docs/PRD.md           —— 产品事实来源
+3. README.md（本文件）    —— 怎么跑、怎么测、怎么加能力
+
+当前目标：先把 Agent 基本框架搭完（见 architecture.md 附录 A.2 的 F1…F7），再继续功能项。
+
+必须遵守：
+- 一次一个小改动，每步可验证；不引入 LangGraph / 多 Agent / 向量库等大框架。
+- 改动前核对 10 条不变量。I-2/I-3 来自两个真实缺陷（X-16 教练抢答判定、X-17 自述覆盖状态），不要回退。
+- 加能力走能力注册表（domain/capabilities.py + executor.py），不改编排层；漏写 handler 有测试把关。
+- 测试用自研 runner（tests/_runner.py，PASS/FAIL/SKIP 三态）；"跳过"必须 raise SkipTest，绝不能 return。
+- LLM 调用失败必须有确定性兜底；状态迁移必须幂等、不覆盖新值、不删旧键。
+- 每阶段交付：改了什么、为什么、如何验证、下一步。
+```
 
 ## 快速开始
 
@@ -60,7 +93,7 @@ App_landing/
 │   ├── user_state.json
 │   └── rag/            # raw/ chunks.jsonl qdrant/ models/
 ├── evals/              # 评测集（dev/holdout）+ M-01 判分一致率 runner（详见下方章节）
-├── tests/              # 回归测试：116 个用例（109 确定性 + 7 真实模型）+ audit.py 审计工具
+├── tests/              # 回归测试：182 个用例（175 确定性 + 7 真实模型）+ audit.py 审计工具
 └── .gitignore
 ```
 
@@ -69,18 +102,38 @@ App_landing/
 | 层 | 目录 | 职责 | 约束 |
 |---|---|---|---|
 | 接口层 | `coach/cli/` | 终端交互与渲染 | 只读 `TurnResult`，不含业务逻辑 |
-| 编排层 | `coach/orchestration/` | 单轮流程 `run_turn()` | 决定"先做什么后做什么"，不直接调 LLM |
+| 编排层 | `coach/orchestration/` | **骨架槽位驱动**（`executor.py`）+ 薄壳 `run_turn()` | **流程顺序在注册表里**，加能力不改编排层（见 [docs/architecture.md](docs/architecture.md) §5） |
 | 应用层 | `coach/services/` | 用例（抽取/测评/计划/任务/验收/对话） | 可调 LLM，**不做状态机推进、不落盘** |
 | 持久化 | `coach/storage/` | 状态读写与清理备份 | 只碰 `data/` |
 | 指标采集 | `coach/metrics/` | 事件记录、汇总、导出 | **fail-safe**：采集失败绝不影响主流程；默认关闭，CLI 启动时开启 |
 | 提示词 | `coach/prompts/` | 纯文本提示词 | 无逻辑 |
 | 模型访问 | `coach/llm/` | 唯一 LLM 出口 | **模型名只在此配置**（`coach/config.py`） |
-| 领域层 | `coach/domain/` | 纯逻辑（守卫、游标、聚合、清洗） | **无 IO、无 LLM、可单测** |
+| 领域层 | `coach/domain/` | 纯逻辑（守卫、游标、聚合、清洗）+ **能力注册表 `capabilities.py`** + **三级授权 `autonomy.py`** | **无 IO、无 LLM、可单测** |
 
 两条历史包袱已消除：① 模型名原本硬编码在 6 个文件里，现只在 `coach/config.py` 定义一处；② `_json_call()` 原本在 5 个模块里各有一份，现只有 `coach/llm/client.py` 一份。
 
 > 分层的原因与取舍见 `docs/PRD.md` 的 **S-03（统一模型配置）** 与 §2.1 架构定性。
-> **完整的 agent 架构决策**（编排范式 / 能力注册表 / 三级自主权 / 感知契约，含 5 条不变量）见 [docs/architecture.md](docs/architecture.md)。
+> **完整的 agent 架构决策**（编排范式 / 能力注册表 / 三级自主权 / 感知契约，含 10 条不变量）见 [docs/architecture.md](docs/architecture.md)。
+
+### 加一个新能力要改什么
+
+一轮的执行顺序**不在 `turn.py` 里**，而在 `coach/domain/capabilities.py` 的注册表里。
+
+```python
+# 1) 在 capabilities.py 的 REGISTRY 里加一条声明
+Capability(
+    name="tool.web_search", kind="tool", slot=SLOT_STAGE_PRE,
+    stages=("planning",),                    # 只在计划阶段参与
+    reads=("learning_goal",), writes=("search_cache",),
+    calls_llm=False, autonomy="read",        # 只读 → 不需确认门
+    order=25,
+)
+# 2) 在 orchestration/executor.py 里加 precondition 与 handler
+#    未登记或漏写 handler → tests/test_capabilities.py 直接失败
+```
+
+**不用改 `turn.py`。** 若要改**流程本身**（槽位顺序、推进点），那才是改骨架 ——
+这是有意设计的：**加能力应当容易，改流程应当难**。
 
 #### 旧模块 → 新位置对照（V0.8 重构）
 
@@ -370,7 +423,7 @@ goal_clarification → assessment → planning → learning → evaluation → p
 - **审计**：`python tests/audit.py` 按**断言对象**给用例分类（纯函数 / 行为 / 持久化 / 契约 / live），
   并检查"跳过是否被当作通过"。报告见 [docs/test-audit.md](docs/test-audit.md)。
 
-当前读数（无 Key）：**109 通过 / 0 失败 / 7 跳过**；配 Key 时为 **116 通过 / 0 跳过**。
+当前读数（无 Key）：**175 通过 / 0 失败 / 7 跳过**；配 Key 时为 **182 通过 / 0 跳过**。
 
 ### 各版本用例
 
@@ -453,6 +506,17 @@ goal_clarification → assessment → planning → learning → evaluation → p
   **② 教练自述覆盖状态**——模型沿用历史里自己编的任务，无视注入的真实任务。
   用例覆盖：对话必须使用**本轮起始阶段**提示词、提交轮不得把提交正文交给模型评判、
   权威状态必须排在对话历史**之后**、画像齐全后不再每轮空跑抽取。
+- **能力注册表 / 三级授权 / 执行顺序**
+  ```powershell
+  .\.venv\Scripts\python.exe tests\test_capabilities.py
+  ```
+  校验注册表与实现**不得脱节**：`validate_registry()` 无问题、**`missing_handlers()` 为空**
+  （声明了能力却没写 handler 是最危险的漏步形态）、每个阶段都有已启用能力、
+  `(slot, order)` 不冲突、未声明 `autonomy` 一律按 `danger`（fail-closed）。
+  其中两条是**把不变量固定在结构上**：
+  - **I-9**：`engagement.*` 能力**不得写任何判定字段**（趣味化不能污染验收信号）
+  - 教练回复 `writes == ()`（不得隐式污染状态）
+  另有 4 条**执行顺序钉桩**，锁住 `intake → stage_pre → 推进 → … → closing` 的真实顺序。
 
 ## 指标采集与导出（`coach/metrics/`）
 

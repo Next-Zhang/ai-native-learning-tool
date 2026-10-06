@@ -41,9 +41,10 @@ REQUIRED_FIELDS = (
     "tokens_in", "tokens_out", "latency_ms", "cost",
     "tool_calls", "result", "verdict",
 )
-# 本项目扩展字段
+# 本项目扩展字段（PRD 必填字段之外）
 EXTRA_FIELDS = ("label",)
-SCHEMA_FIELDS = ("ts", "session_id", "stage", "event", "label", "model",
+#: 事件字段全集；**顺序即 CSV 导出的列顺序**（`coach.metrics.export`）
+SCHEMA_FIELDS = ("ts", "session_id", "stage", "event", *EXTRA_FIELDS, "model",
                  "tokens_in", "tokens_out", "latency_ms", "cost",
                  "tool_calls", "result", "verdict")
 

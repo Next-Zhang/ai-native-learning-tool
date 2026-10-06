@@ -53,7 +53,7 @@ GATED_ACTIONS: dict[str, GatedAction] = {
     ActionId.REBUILD_PLAN.value: GatedAction(
         action_id=ActionId.REBUILD_PLAN.value,
         label="重建学习计划",
-        description="丢弃当前 7 天滚动计划，重新生成一份新计划",
+        description="丢弃当前路线图与执行窗口，重新生成一份新计划",
         consequence="未完成的旧任务与当前游标进度将失效",
     ),
     ActionId.CHANGE_LEARNING_GOAL.value: GatedAction(

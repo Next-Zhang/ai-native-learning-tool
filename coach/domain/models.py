@@ -20,17 +20,30 @@ from coach.domain.evaluation_rules import (
 )
 
 
+#: 中文数字 → 次数（用于"每周三次"这类写法）
+_CN_COUNTS = {
+    "一": 1, "两": 2, "二": 2, "三": 3, "四": 4,
+    "五": 5, "六": 6, "七": 7, "八": 8, "九": 9, "十": 10,
+}
+
+
 # ---------------------------------------------------------------------------
 # 学习需求画像
 # ---------------------------------------------------------------------------
 
 class UserProfile(BaseModel):
-    """学习需求画像的四个字段，全部可选（没提到就是 None）。"""
+    """学习需求画像。
+
+    **必填四项**（见 `profile_rules.PROFILE_FIELDS`）：目标 / 水平 / **单次可投入时长** / 期限。
+    `sessions_per_week` 是**可选**的——碎片化场景下"每周几次"常无法承诺，
+    强制追问只会增加摩擦（UR-08：一次只问 1~2 个关键问题）。
+    """
 
     learning_goal: str | None = None      # 想学什么
     current_level: str | None = None      # 当前水平
-    daily_minutes: int | None = None      # 每天可投入分钟数
+    session_minutes: int | None = None    # **单次**可投入分钟数（碎片化的基本单位）
     target_date: str | None = None        # 期望期限
+    sessions_per_week: int | None = None  # 每周大约几次（可选；None = 不作承诺）
 
     @field_validator("learning_goal", "current_level", "target_date", mode="before")
     @classmethod
@@ -41,7 +54,7 @@ class UserProfile(BaseModel):
             return value or None
         return value
 
-    @field_validator("daily_minutes", mode="before")
+    @field_validator("session_minutes", mode="before")
     @classmethod
     def _parse_minutes(cls, value):
         """把模型可能给出的各种写法归一成整数分钟。
@@ -65,6 +78,29 @@ class UserProfile(BaseModel):
                 return int(minutes)
             if "半" in text and ("小时" in text or "h" in text.lower()):
                 return 30
+        return None
+
+    @field_validator("sessions_per_week", mode="before")
+    @classmethod
+    def _parse_count(cls, value):
+        """把"每周几次"归一成整数（可选字段）。
+
+        容忍："3" / "3次" / "每周三次" / 3；无法解析 → None（宁缺勿错）。
+        """
+        if value is None or isinstance(value, bool):
+            return None
+        if isinstance(value, (int, float)):
+            return max(1, int(value))
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return None
+            number = re.search(r"(\d+(?:\.\d+)?)", text)
+            if number:
+                return max(1, int(float(number.group(1))))
+            chinese = re.search(r"([一两二三四五六七八九十])", text)
+            if chinese:
+                return _CN_COUNTS[chinese.group(1)]
         return None
 
 
@@ -141,7 +177,7 @@ class ConfirmationVerdict(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# 每日任务
+# 学习任务
 # ---------------------------------------------------------------------------
 
 class SubmissionVerdict(BaseModel):

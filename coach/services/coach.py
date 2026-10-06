@@ -3,9 +3,14 @@
 职责：把「阶段提示词 + 已知画像 + 参考资料 + 历史 + 本轮输入」组装成消息并调用模型。
 **不再自己持有 LLM 客户端**（改由 `coach.llm` 统一提供），也不再硬编码模型名。
 
-RAG 采用**惰性导入**：RAG 本期不在范围，缺失时不应影响主流程。
+RAG 采用**惰性导入**：RAG 本期不在范围，缺失时不应影响主流程
+（导入与检索都包在 try/except 里，失败只 `print` 一行提示并按"无参考资料"继续）。
+
+兜底：`client.chat` 失败时返回 `FALLBACK_REPLY`，**绝不向上抛** ——
+`cli.main` 与 `orchestration.turn` 都没有 try/except，抛出去就是整个会话崩掉。
 """
 
+from coach.domain.profile_rules import PROFILE_FIELDS
 from coach.domain.stages import (
     STAGE_ASSESSMENT,
     STAGE_EVALUATION,
@@ -24,12 +29,20 @@ from coach.services.planning import describe_plan
 
 __all__ = ["chat_with_coach", "describe_known_profile"]
 
+#: 模型调用失败时的**确定性兜底回复**。必须不涉及任何阶段判定
+#: （不提"通过/未通过/下一步"），否则会在代码判定之前误导用户（缺陷 A）。
+FALLBACK_REPLY = (
+    "（本轮没能取到模型的回复：可能是网络波动或 API Key 失效。"
+    "你的学习进度已保存，请稍后重试。）"
+)
+
 # 字段 -> 中文标签，用于拼"已知信息"
 _PROFILE_LABELS = {
     "learning_goal": "学习目标",
     "current_level": "当前水平",
-    "daily_minutes": "每天可投入",
+    "session_minutes": "单次可投入",
     "target_date": "期望期限",
+    "sessions_per_week": "每周大约",       # 可选项：知道就展示，但不追问
 }
 
 
@@ -47,15 +60,18 @@ def describe_known_profile(state, stage: str | None = None) -> str:
         value = state.get(field)
         if value in (None, "", []):
             continue
-        if field == "daily_minutes":
+        if field == "session_minutes":
             value = f"{value} 分钟"
+        elif field == "sessions_per_week":
+            value = f"约 {value} 次/周"
         lines.append(f"- {label}：{value}")
     if not lines:
         return ""
-    # 明确告知还缺什么，让“状态”真正驱动下一步提问
+    # 明确告知还缺什么，让“状态”真正驱动下一步提问。
+    # **只列必填项** —— 可选项（每周几次）不该把用户卡在澄清阶段。
     missing = [
-        label for field, label in _PROFILE_LABELS.items()
-        if state.get(field) in (None, "", [])
+        _PROFILE_LABELS[field] for field in PROFILE_FIELDS
+        if field in _PROFILE_LABELS and state.get(field) in (None, "", [])
     ]
     if missing:
         lines.append(f"- 仍缺失（需要询问）：{'、'.join(missing)}")
@@ -98,7 +114,14 @@ def describe_known_profile(state, stage: str | None = None) -> str:
     return "\n".join(lines)
 
 
-def chat_with_coach(user_input, history, use_rag=False, top_k=5, state=None, stage=None):
+def chat_with_coach(
+    user_input: str,
+    history: list[dict],
+    use_rag: bool = False,
+    top_k: int = 5,
+    state: dict | None = None,
+    stage: str | None = None,
+) -> tuple[str, list[dict]]:
     """与教练对话。
 
     use_rag=True 时，若问题与 Python 知识相关就先检索本地向量库，
@@ -111,17 +134,27 @@ def chat_with_coach(user_input, history, use_rag=False, top_k=5, state=None, sta
     `state` 不为空时会注入"当前权威状态"，让教练不再重复询问已有信息。
 
     返回 (回答文本, 来源列表)。来源列表为空表示本次没有使用知识库。
+
+    兜底（审计修复）：模型调用失败时**不抛出**，而是 `print` 失败提示并返回
+    `FALLBACK_REPLY` —— 否则一次网络抖动会直接掀掉整个 CLI 会话
+    （`cli.main` / `run_turn` 都没有 try/except）。
     """
 
-    sources = []
+    sources: list[dict] = []
     context = ""
 
-    # 1) 判断是否需要查库，需要则检索（惰性导入：RAG 不在范围时不影响主流程）
+    # 1) 判断是否需要查库，需要则检索（惰性导入 + 兜底：RAG 不可用时不影响主流程，
+    #    与 `cli.main._format_sources` 的处理保持一致；首次检索会下载/加载本地模型，
+    #    失败是常见情况，绝不能让它中断对话）
     if use_rag:
-        from rag.tool import build_context, should_retrieve
+        try:
+            from rag.tool import build_context, should_retrieve
 
-        if should_retrieve(user_input):
-            context, sources = build_context(user_input, top_k=top_k)
+            if should_retrieve(user_input):
+                context, sources = build_context(user_input, top_k=top_k)
+        except Exception as exc:            # noqa: BLE001 —— 检索失败按"无参考资料"继续
+            print(f"[知识库检索失败，本轮按无参考资料继续] {type(exc).__name__}: {exc}")
+            context, sources = "", []
 
     # 2) 组装消息。顺序很关键：
     #    阶段提示词 → (参考资料) → 对话历史 → **当前权威状态** → 本轮用户输入
@@ -163,6 +196,10 @@ def chat_with_coach(user_input, history, use_rag=False, top_k=5, state=None, sta
         }
     )
 
-    answer = client.chat(messages)
+    try:
+        answer = client.chat(messages)
+    except Exception as exc:                # noqa: BLE001 —— 一次对话失败不得中断整个会话
+        print(f"[对话调用失败，已使用兜底回复] {type(exc).__name__}: {exc}")
+        answer = FALLBACK_REPLY
 
     return answer, sources

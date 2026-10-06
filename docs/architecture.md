@@ -116,27 +116,55 @@
 6. **`autonomy` 是上限**：能力试图执行高于自身级别的动作 → **抛错**（不是降级执行）。
 7. **工具默认 `read`**：只读检索可自主；任何写外部系统的工具必须是 `write` 或 `danger`。
 
-### 4.3 阶段×能力矩阵
+### 4.3 骨架槽位 × 能力矩阵
 
-| 阶段 | 能力（按 order） | 调模型 | 副作用 | 状态 |
-|---|---|---|---|---|
-| `goal_clarification` | `perception.profile_extract`（**仅画像未齐时**） | 是 | write | 现有 |
-| `assessment` | `planning.assessment_outline` → `perception.assessment_verdict` | 是 | write | 现有 |
-| `planning` | `perception.plan_confirm` → `planning.plan_generate` | 是 | write | 现有 |
-| `planning`（**用户带计划**） | `perception.plan_parse` → `planning.plan_align` → `planning.plan_diff` | 是 | write | **待建 S-16** |
-| `learning` | `perception.submission_detect` → `planning.window_task_build` | 是 | write | 现有（改名） |
-| `learning`（**窗口走完**） | `planning.window_roll`（按实际速度**重估**；跨里程碑需确认） | 否 | write | **待建 S-12** |
-| `evaluation` | `perception.evidence_check` → `evaluation.judge`（证据不足时 `evaluation.ask_followup`，**上限 1 次**） | 是 | write | **待建 S-13** |
-| `profile_update` | `memory.profile_apply` | 否 | write | 现有 |
-| **任意阶段** | `dialogue.coach_reply` → `metrics.observe` | 是 / 否 | read | 现有 |
-| **任意阶段** | `engagement.feedback`（**仅反馈层**，不得进判定链） | 否 | read | **待建 S-15**（I-9） |
-| **任意阶段（登记例外）** | `policy.exception_transition`：换任务 / 缩短本次 / 结束窗口 / 跳过测评 / 换目标 | 否 | write / **danger** | **待建 S-14** |
+**骨架槽位是固定的**（改它 = 改流程，应当难改）；**能力可插拔**（加它 = 不动 `turn.py`）。
+一轮里有 **4 个推进点**，位置属于状态机契约（I-1）：
 
-> 这张表就是 `turn.py` 现在**硬编码 11 步顺序**的显式化。改成矩阵驱动后，`turn.py` 只负责
-> "取当前阶段的能力 → 按 order 执行 → 交回状态机推进"，不再包含具体业务步骤。
->
-> **验收档位不是能力**：`tier ∈ {L1, L2, L3}` 由**代码**按 `session_minutes` + 累积证据算出（I-10），
-> 模型只负责在给定档位下判定，**不得自行降档**。
+| 槽位 | 阶段 | 能力（按 order） | 调模型 | 副作用 | 状态 |
+|---|---|---|---|---|---|
+| `intake` | 任意 | `perception.profile_extract`（**仅画像未齐时**） | 是 | write | 现有 |
+| `stage_pre` | `planning` | `perception.plan_confirm` → `planning.plan_generate` | 是 | write | 现有 |
+| `stage_pre` | `learning` | `perception.submission_detect` → `planning.daily_task_build` | 是 / 否 | write | 现有 |
+| `stage_pre` | `evaluation` | `evaluation.judge` | 是 | write | 现有 |
+| `stage_pre` | `planning` | `perception.plan_parse` → `planning.plan_align` → `planning.plan_diff` | 是 | write | **待建 S-16** |
+| `stage_pre` | `evaluation` | `perception.evidence_check` | 是 | read | **待建 S-13** |
+| — | — | **【骨架推进点 #1】** | — | — | 现有 |
+| `stage_post` | `assessment` | `planning.assessment_outline` | 是 | write | 现有 |
+| `stage_post` | `evaluation` | `evaluation.ask_followup`（**上限 1 次**） | 是 | write | **待建 S-13** |
+| `dialogue` | 任意 | `dialogue.coach_reply`（**用本轮起始阶段** —— I-2） | 是 | read | 现有 |
+| `after_dialogue` | `assessment` | `perception.assessment_verdict` → `memory.assessment_finalize` | 是 / 否 | write | 现有 |
+| — | — | **【骨架推进点 #2：测评收尾后（条件）】** | — | — | 现有 |
+| `evaluation_apply` | `evaluation` / `profile_update` | `memory.profile_apply`（**内部含推进 #3、#4**） | 否 | write | 现有 |
+| `closing` | `learning` | `planning.window_finish_check`（**用本轮起始阶段快照**） | 否 | read | 现有 |
+| `closing` | `learning` | `planning.window_roll`（**会调模型**：生成新窗口） | 是 | write | 现有（v0.14） |
+| `closing` | 任意 | `memory.commit_history` | 否 | write | 现有 |
+| `closing` | 任意 | `engagement.feedback`（**仅反馈层**） | 否 | read | **待建 S-15** |
+| 任意阶段（登记例外） | 任意 | `policy.exception_transition`：换任务 / 缩短本次 / 结束窗口 / 跳过测评 / 换目标 | 否 | write / **danger** | **待建 S-14** |
+
+> **这张表就是 `turn.py` 原有 11 步硬编码顺序的显式化**，由 `coach/domain/capabilities.py`
+> 声明、`coach/orchestration/executor.py` 执行。`turn.py` 已退化为薄壳（装配上下文 + 收尾）。
+
+### 4.4 两处必须精确的语义（实现时踩过）
+
+| 语义 | 为什么不能想当然 | 落地方式 |
+|---|---|---|
+| **阶段快照** | 原 `turn.py` **在不同位置取不同快照**：③ 用推进**前**的阶段算 `in_learning`，⑥ 用推进**后**的阶段。统一用实时阶段会让"窗口完成检查"被静默跳过 | 注册表字段 `stage_source ∈ {live, turn_start}`；`select_capabilities()` 按每条能力各取所需快照 |
+| **推进点归属** | 推进 #1 是无条件的骨架动作；#2/#3/#4 是**条件性**的，属于对应能力的语义（"测评收尾"、"应用判定"） | #1 在 `execute_slots` 的槽位边界；#2/#3/#4 在 `_h_assessment_finalize` / `_h_profile_apply` 内部 |
+
+> **`metrics` 不是能力**：指标记录是**横切**的（在 `llm/client.py` 与 `run_turn` 里内联），
+> 不参与执行循环，因此不登记为能力。
+
+### 4.5 校验：声明与实现不得脱节
+
+`tests/test_capabilities.py` 断言：
+
+- `validate_registry()` 无问题（名称唯一、`(slot, order)` 不冲突、`autonomy` 声明有效、每个阶段都有已启用能力…）
+- **`missing_handlers()` 为空** —— 声明了能力却没写 handler/precondition 是最危险的漏步形态
+- `engagement.*` **不得写任何判定字段**（**I-9 的结构化落实**）
+- `dialogue.coach_reply` 的 `writes == ()`（教练回复不得隐式污染状态）
+- 现有能力集合与 `turn.py` 的 11 步**逐条对应**
+- 执行顺序钉桩（`tests/test_dialogue.py`）：`intake → stage_pre → 推进 → stage_post → dialogue → after_dialogue → evaluation_apply → closing`
 
 ---
 
@@ -206,7 +234,7 @@ class PlanProposal:
 
 ## 6. 三级自主权（决策 3）
 
-### 5.1 级别定义
+### 6.1 级别定义
 
 | 级别 | 判定标准 | 是否需要确认 | 例 |
 |---|---|---|---|
@@ -214,7 +242,7 @@ class PlanProposal:
 | **`write`** | 改变 **state 中影响后续行为**的字段 | 需要**记录**；若可逆则不必逐次确认 | 写画像、写计划、写 `pending_submission`、写 `latest_result` |
 | **`danger`** | **不可逆**或影响用户长期权益 | **必须过确认门**（拒绝/超时/异常一律不执行） | 删学习历史、改长期目标、重建计划、标记技能已掌握 |
 
-### 5.2 危险动作登记（已有）
+### 6.2 危险动作登记（已有）
 
 `coach/domain/confirmations.py` 的 `GATED_ACTIONS` 是**唯一来源**，现登记 4 项：
 
@@ -227,7 +255,7 @@ class PlanProposal:
 
 **未登记动作 → 抛 `UnknownActionError`**（不是静默放行）。
 
-### 5.3 与能力的衔接规则
+### 6.3 与能力的衔接规则
 
 - 能力的 `autonomy` 是它的**上限**：能力试图执行超过自身级别的动作 → **抛错**。
 - **工具默认 `read`**：只读检索、查询可自主；任何写外部系统的工具必须是 `write` 或 `danger`。
@@ -237,7 +265,7 @@ class PlanProposal:
 
 ## 7. 感知契约草案（决策 4：先文档，后代码）
 
-### 6.1 目标形状
+### 7.1 目标形状
 
 ```python
 @dataclass(frozen=True)
@@ -250,7 +278,7 @@ class PerceptionResult:
     raw: str | None = None    # 原始模型输出，仅用于排查与指标
 ```
 
-### 6.2 不变量
+### 7.2 不变量
 
 | # | 不变量 | 理由 |
 |---|---|---|
@@ -259,7 +287,7 @@ class PerceptionResult:
 | P-3 | `raw` **只进日志/指标**，不进 state | 避免上下文膨胀与不可控内容入状态 |
 | P-4 | 判定失败时**保持当前阶段、不推进** | 与 I-1 一致：没有判定就没有推进依据 |
 
-### 6.3 现状与落地时机
+### 7.3 现状与落地时机
 
 当前 4 个判定点（`extract_profile` / `detect_submission` / `confirm_plan` / 两个 `*_judge`）
 **各自实现了这套语义但没有统一类型**。**改代码的时机**：出现**第 5 个判定点**（例如工具调用、
@@ -274,7 +302,7 @@ teaching 的诊断）时一并统一——那时抽象才有第二个以上真�
 | 状态机守卫 | `coach/domain/stages.py`，已被 10 个用例锁定 | 不动（I-1 的载体） |
 | 单轮编排 | `coach/orchestration/turn.py`，11 步硬编码 | **改造为按矩阵驱动 + Step / Selector / Policy**（决策 2 / 5） |
 | 确认门 | `coach/domain/confirmations.py`，16 个用例 | 扩展为**统一三级授权声明清单**（决策 3）+ 登记**例外转移**（S-14） |
-| **计划模型** | 单一 `current_plan` + 固定 `min(7, 期限)` | **改为双层 `roadmap` + `current_window`**，窗口自适应（决策 6 / S-12） |
+| **计划模型** | 单一 `current_window` + 固定 `min(7, 期限)` | **改为双层 `roadmap` + `current_window`**，窗口自适应（决策 6 / S-12） |
 | **时间预算** | `daily_minutes`（单字段） | 改为 `session_minutes` + `sessions_per_week` + `deadline_flex`（§11.3） |
 | **验收** | `EvaluationResult`（completion / mastery / next_action） | 增加 `tier` / `evidence_form` / `mastery_declared`；**档位由代码定**（I-10 / S-13） |
 | 提示词 | `coach/prompts/` 集中 | 不动（新增档位与计划的提示词） |
@@ -364,7 +392,7 @@ teaching 的诊断）时一并统一——那时抽象才有第二个以上真�
 | **任务粒度约束** | 单任务预计时长 ≤ `session_minutes`，**由代码校验**（不靠模型自觉） |
 | **确认门防打扰** | `roadmap` 首次**必须**确认；同里程碑内的窗口滚动**不打扰**；**跨里程碑需确认**；**改目标 = `danger`**（I-4） |
 | **计划来源** | `roadmap.source ∈ {generated, user_provided}`；用户原始计划存 `roadmap.original`，**只读保留（I-7）** |
-| **迁移** | `current_plan` 平滑过渡为 `current_window`（`ensure_keys`），旧 state 文件不炸 |
+| **迁移** | `current_window` 平滑过渡为 `current_window`（`ensure_keys`），旧 state 文件不炸 |
 
 ---
 
@@ -431,3 +459,59 @@ teaching 的诊断）时一并统一——那时抽象才有第二个以上真�
 > **开启趣味化前后，同一份提交得到完全相同的 `tier` 与 `completion`。**
 
 没有这条用例，I-9 就只是一句口号。
+
+---
+
+## 附录 A · 框架完成度与缺口（滚动更新）
+
+> 本附录回答一个问题：**"Agent 的基本框架搭完了吗？"**
+> **框架件** = 与业务能力无关的结构性部件；**加新功能不应需要动它们**。
+> 最后更新：2026-09-22（v0.14）。
+
+### A.1 已完成（9 件）
+
+| # | 框架件 | 载体 | 版本 |
+|---|---|---|---|
+| 1 | 分层包 + 依赖方向（下层不依赖上层） | `coach/` | v0.8 |
+| 2 | 状态机 + 守卫（**I-1**） | `domain/stages.py` | v0.3 |
+| 3 | 能力注册表 + 骨架槽位（**唯一流程来源**） | `domain/capabilities.py` | v0.12 |
+| 4 | 执行器（唯一执行者） | `orchestration/executor.py` | v0.12 |
+| 5 | 三级授权（read / write / danger，fail-closed） | `domain/autonomy.py` | v0.12 |
+| 6 | 双层计划模型（路线图 + 执行窗口） | `domain/plan_rules.py` | v0.14 |
+| 7 | 确认门（fail-closed；未登记动作抛错） | `domain/confirmations.py` | v0.6 |
+| 8 | 指标与评测 | `coach/metrics/` + `evals/` | v0.7 |
+| 9 | 状态迁移（幂等、不覆盖新值、不删旧键） | `domain/state_schema.py` | v0.13 |
+
+### A.2 缺口（**下一步的工作清单**）
+
+| 序 | 框架件 | 现状 | 说明 |
+|---|---|---|---|
+| **F1** | **感知契约 `PerceptionResult`** | ⬜ | 统一现有 4 个判定点。**§7.3 的触发条件即将满足**：S-13 会新增 2 个判定点（证据检查 / 限定追问），届时一并统一 |
+| **F2** | **Planner（只提议）+ `PlanProposal` 契约** | ⬜ | 见 §5.3。含 `max_steps` / `max_followups` 上限与**失败回退** |
+| **F3** | **记忆分层 + 写入者声明（I-8）** | ⬜ | 见 §12。现状是每轮注入全量 history（已实测的成本问题） |
+| **F4** | **内容层护栏 guardrails** | ⬜ | 内容层的可验证约束，独立于编排层，可叠加 |
+| **F5** | **单轮因果链（可观测）** | ⬜ | 现仅事件级指标；X-16 排查时只能人肉比对。目标：`输入 → 判定 → 状态变化 → 回复` **可回放** |
+| **F6** | **状态 schema 显式版本号** | 🔸 | 已有 `ensure_keys` + 三类幂等迁移，缺 `schema_version` 字段 |
+| **F7** | **`reads/writes` 的契约测试** | ⬜ | 见 A.3 |
+| 条件 | `HybridSelector`（模型提议步骤） | ⬜ | **三条硬前置**见 §5.4 |
+
+### A.3 已知风险：`reads/writes` 目前只是文档
+
+`Capability.reads` / `writes` 的结果**没有任何测试校验**，因此已发现 **8 处欠声明**（声明少于实现实际读写）：
+
+| 能力 | 欠声明 |
+|---|---|
+| `planning.daily_task_build` | `writes` 缺 `plan_progress` |
+| `evaluation.judge` | `writes` 缺 `latest_result_applied` |
+| `memory.assessment_finalize` | `writes` 缺 `assessment_progress` |
+| `memory.profile_apply` | `writes` 缺 `latest_result_applied` / `today_task` / `pending_submission` |
+| `planning.window_roll` | `writes` 缺 `pending_submission` / `latest_result` / `latest_result_applied` |
+| `planning.window_finish_check` | `reads` 缺 `current_window` |
+| `planning.plan_generate` | `reads` 缺 `skill_profile` |
+| `perception.plan_confirm` | `reads` 缺 `roadmap` / `plan_progress` |
+
+> **§4.2 规则 1（"声明即契约"）需要一条测试才能真正生效**：断言每个 enabled 能力的
+> `writes ⊇ 该 handler 实际改动的 state 键`。这正是 **F7**。
+>
+> 补充说明：所有能力都不声明 `current_stage`，但骨架的 4 个推进点会写它 ——
+> 这是**有意设计**（推进不属于任何能力，是 I-1 的载体），不算欠声明。

@@ -29,6 +29,7 @@ from coach.domain.stages import (
     STAGE_EVALUATION,
     STAGE_GOAL_CLARIFICATION,
     STAGE_LEARNING,
+    STAGE_PLANNING,
 )
 from coach.domain.state_schema import DEFAULT_STATE
 from coach.metrics import recorder as metrics
@@ -65,16 +66,44 @@ def _patched_chat(captured: dict, answer: str = "（测试回答）"):
 
 
 @contextmanager
-def _no_save():
-    """阻断落盘，避免测试写真实 data/user_state.json。"""
-    from coach.orchestration import turn as turn_module
+def _no_json_call():
+    """阻断真实的结构化模型调用（`client.json_call`），让本文件的用例**完全不联网**。
 
-    original = turn_module.save_state
-    turn_module.save_state = lambda state: None
+    只 patch `client.chat` 不够：`run_turn` 内部还会走 `client.json_call` ——
+    `planning.ensure_plan`（生成路线图）与 `daily_task.detect_submission`（判提交）。
+    在配了 `DEEPSEEK_API_KEY` 的机器上，那两条"确定性"用例会真的发请求：既花钱，
+    又让结果依赖网络。这里一律按"调用失败"处理，走各服务已有的兜底路径，
+    而本文件断言的是**执行顺序**，与兜底与否无关。
+    """
+    from coach.llm import client as llm_client
+
+    original = llm_client.json_call
+
+    def fake(*_args, **_kwargs):
+        raise RuntimeError("测试中禁止真实模型调用（client.json_call 已阻断）")
+
+    llm_client.json_call = fake
     try:
         yield
     finally:
-        turn_module.save_state = original
+        llm_client.json_call = original
+
+
+@contextmanager
+def _no_save():
+    """阻断落盘，避免测试写真实 data/user_state.json。
+
+    落盘发生在 `coach/orchestration/executor.py` 的 `_h_commit_history` 里，
+    所以 patch 目标从 `turn` 移到了 `executor`（执行器重构的连带修改，非行为变化）。
+    """
+    from coach.orchestration import executor as executor_module
+
+    original = executor_module.save_state
+    executor_module.save_state = lambda state: None
+    try:
+        yield
+    finally:
+        executor_module.save_state = original
 
 
 @contextmanager
@@ -102,8 +131,10 @@ def _state(**extra) -> dict:
 
 
 def _plan() -> dict:
+    """执行窗口用**当前结构**（`length`；`horizon_days` 是 v0.14 之前的旧名）。"""
     return {
-        "horizon_days": 1,
+        "length": 1,
+        "unit": "session",
         "start_date": "2026-09-22",
         "days": [{"day": 1, "theme": "列表与字典", "tasks": [{"goal": "掌握列表常用操作"}]}],
     }
@@ -114,11 +145,11 @@ def _learning_state_with_submission(**extra) -> dict:
     state = _state(
         learning_goal="Python 数据分析",
         current_level="有一点基础",
-        daily_minutes=30,
+        session_minutes=30,
         target_date="1个月",
         current_stage=STAGE_LEARNING,
         plan_confirmed=True,
-        current_plan=_plan(),
+        current_window=_plan(),
         today_task={
             "day": 1, "task": 1, "theme": "列表与字典", "goal": "掌握列表常用操作",
         },
@@ -129,8 +160,28 @@ def _learning_state_with_submission(**extra) -> dict:
     return state
 
 
-def _system_messages(messages) -> list[str]:
-    return [m["content"] for m in messages if m["role"] == "system"]
+@contextmanager
+def _record_order(order: list):
+    """记录**实际执行的能力顺序**（包装 executor.HANDLERS，不改行为）。
+
+    这是编排层重构后最容易出错的地方：能力集合对了，顺序错了。
+    """
+    from coach.orchestration import executor as executor_module
+
+    original = dict(executor_module.HANDLERS)
+
+    def wrap(name, fn):
+        def inner(ctx):
+            order.append(name)
+            return fn(ctx)
+        return inner
+
+    executor_module.HANDLERS.update({k: wrap(k, v) for k, v in original.items()})
+    try:
+        yield order
+    finally:
+        executor_module.HANDLERS.clear()
+        executor_module.HANDLERS.update(original)
 
 
 # ---------------------------------------------------------------------------
@@ -142,7 +193,7 @@ def test_coach_uses_turn_start_stage_not_advanced_stage():
     state = _learning_state_with_submission()
     captured: dict = {}
 
-    with _no_save(), _patched_chat(captured):
+    with _no_save(), _patched_chat(captured), _no_json_call():
         result = run_turn(state, "这是我的提交", use_rag=False)
 
     assert result.stage_before == STAGE_LEARNING
@@ -195,7 +246,11 @@ def test_learning_stage_injection_forbids_premature_verdict():
 
 
 def test_learning_stage_prompt_forbids_verdict():
-    """双重保险：阶段提示词本身也写明不准判定。"""
+    """双重保险：阶段提示词本身也写明不准判定。
+
+    契约钉桩：只断言提示词文本，**只防误删、不证明行为** ——
+    真正防止抢答的是上面那条"注入内容里不给提交正文"的用例。
+    """
     prompt = STAGE_PROMPTS[STAGE_LEARNING]
     assert "不要判定通过与否" in prompt
     assert "验收环节给出" in prompt
@@ -215,7 +270,7 @@ def test_authoritative_state_message_follows_history():
     ]
     captured: dict = {}
 
-    with _no_save(), _patched_chat(captured):
+    with _no_save(), _patched_chat(captured), _no_json_call():
         run_turn(state, "继续", use_rag=False)
 
     messages = captured["messages"]
@@ -234,6 +289,10 @@ def test_authoritative_state_message_follows_history():
 
 
 def test_authoritative_prompt_declares_precedence():
+    """契约钉桩：只断言 `KNOWN_INFO_PROMPT` 的文本，**只防误删、不证明行为**。
+
+    "权威状态压过历史自述"是否真的生效，由上面那条消息顺序用例证明。
+    """
     from coach.prompts.tasks import KNOWN_INFO_PROMPT
 
     assert "优先于" in KNOWN_INFO_PROMPT
@@ -256,7 +315,7 @@ def test_extract_profile_skipped_when_profile_complete():
     counter = {"calls": 0}
     captured: dict = {}
 
-    with _no_save(), _patched_chat(captured), _counting_extract(counter):
+    with _no_save(), _patched_chat(captured), _counting_extract(counter), _no_json_call():
         result = run_turn(state, "继续", use_rag=False)
 
     assert counter["calls"] == 0, "画像齐全时不应再调画像抽取"
@@ -269,11 +328,89 @@ def test_extract_profile_runs_when_profile_incomplete():
     counter = {"calls": 0}
     captured: dict = {}
 
-    with _no_save(), _patched_chat(captured), _counting_extract(counter):
+    with _no_save(), _patched_chat(captured), _counting_extract(counter), _no_json_call():
         result = run_turn(state, "我想学 Python", use_rag=False)
 
     assert counter["calls"] == 1, "画像未齐时必须抽取"
     assert result.updated_fields == []                  # 假抽取返回空画像
+
+
+# ---------------------------------------------------------------------------
+# 执行顺序钉桩（编排层改为矩阵驱动后，顺序是最大的回归风险）
+# ---------------------------------------------------------------------------
+
+def test_step_order_learning_with_pending_submission():
+    """已提交、画像已齐：跳过错题抽取与提交判定，直接推进并收尾。"""
+    state = _learning_state_with_submission()            # pending_submission 已存在
+    order: list[str] = []
+    captured: dict = {}
+
+    with _no_save(), _patched_chat(captured), _record_order(order), _no_json_call():
+        result = run_turn(state, "继续", use_rag=False)
+
+    assert order == [
+        "dialogue.coach_reply",
+        "planning.window_finish_check",
+        "memory.commit_history",
+    ], f"实际顺序：{order}"
+    assert result.stage_after == STAGE_EVALUATION
+
+
+def test_step_order_learning_without_submission():
+    """没有待验收提交时：先判定提交，再对话（不推进）。"""
+    state = _learning_state_with_submission()
+    state["pending_submission"] = None
+    order: list[str] = []
+    captured: dict = {}
+
+    with _no_save(), _patched_chat(captured), _record_order(order), _no_json_call():
+        run_turn(state, "这个怎么做？", use_rag=False)
+
+    assert order == [
+        "perception.submission_detect",
+        "dialogue.coach_reply",
+        "planning.window_finish_check",
+        "memory.commit_history",
+    ], f"实际顺序：{order}"
+
+
+def test_step_order_planning_unconfirmed():
+    """计划阶段且未确认：先判确认，再确保计划生成。"""
+    state = _state(
+        learning_goal="Python 数据分析",
+        current_level="有一点基础",
+        session_minutes=30,
+        target_date="1个月",
+        current_stage=STAGE_PLANNING,
+        current_window=_plan(),
+        plan_confirmed=False,
+    )
+    order: list[str] = []
+    captured: dict = {}
+
+    with _no_save(), _patched_chat(captured), _record_order(order), _no_json_call():
+        run_turn(state, "好的，开始吧", use_rag=False)
+
+    assert order == [
+        "perception.plan_confirm",
+        "planning.plan_generate",
+        "dialogue.coach_reply",
+        "memory.commit_history",
+    ], f"实际顺序：{order}"
+
+
+def test_step_order_advance_happens_between_stage_pre_and_dialogue():
+    """骨架推进点必须在 `stage_pre` 之后、对话之前 —— 否则守卫读到过期状态。"""
+    state = _learning_state_with_submission()
+    order: list[str] = []
+    captured: dict = {}
+
+    with _no_save(), _patched_chat(captured), _record_order(order), _no_json_call():
+        result = run_turn(state, "继续", use_rag=False)
+
+    assert result.transitions == [(STAGE_LEARNING, STAGE_EVALUATION)]
+    # 对话排在最后（在 closing 之前），说明推进发生在它之前
+    assert order.index("dialogue.coach_reply") < order.index("memory.commit_history")
 
 
 # ---------------------------------------------------------------------------

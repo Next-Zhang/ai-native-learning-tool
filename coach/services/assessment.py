@@ -36,12 +36,12 @@ def ensure_plan(state) -> bool:
 
     goal = state.get("learning_goal") or "Python"
     level = state.get("current_level") or "未知"
-    minutes = state.get("daily_minutes")
+    minutes = state.get("session_minutes")
     deadline = state.get("target_date")
 
     user_content = (
         f"学习目标：{goal}\n当前水平：{level}\n"
-        f"每天可投入：{minutes} 分钟\n期望期限：{deadline}\n"
+        f"单次可投入：{minutes} 分钟\n期望期限：{deadline}\n"
         f"请设计 {MIN_QUESTIONS}~{MAX_QUESTIONS} 道测评题。"
     )
 
@@ -85,6 +85,10 @@ def record_answer(state, user_input: str, coach_reply: str) -> AnswerRecord | No
         data = client.json_call(
             ASSESSMENT_JUDGE_SYSTEM_PROMPT, user_content, label="assessment_judge"
         )
+        # JSON 模式仍可能返回非对象（数组 / 字符串）—— 必须在守卫内归一，
+        # 否则下面的 `data.get(...)` 会抛 AttributeError 并跳出兜底。
+        if not isinstance(data, dict):
+            raise TypeError(f"判定结果不是 JSON 对象：{type(data).__name__}")
     except Exception as exc:                      # noqa: BLE001 —— 判定失败保守记为 missing
         print(f"[测评判定失败，按 missing 记录] {type(exc).__name__}: {exc}")
         data = {"verdict": "missing", "answer": "", "note": "判定调用失败"}

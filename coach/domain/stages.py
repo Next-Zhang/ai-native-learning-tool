@@ -6,10 +6,12 @@
 3. **每次 try_advance() 只推进一步** —— 便于观察、便于测试。
 4. 阶段提示词已移出本模块，见 `coach.prompts.stages`（提示词是内容，规则是逻辑）。
 
-关于计划窗口：planning 阶段只规划**未来 7 天**（目标期限不足 7 天则按实际期限），
-滚动推进，不做整周期一次性计划。
+关于计划窗口：planning 阶段先生成**长期路线图**（目标 → 里程碑），再下发**本次执行窗口**
+（长度 = 当前里程碑的 `sessions_est`；单位由单次可投入时长决定 —— 碎片化是"次"，
+整块时间是"天"）。窗口走完后**滚动**到下一里程碑，不做整周期一次性排满。
 """
 
+from coach.domain.coercion import to_bool
 from coach.domain.profile_rules import profile_complete
 
 # 阶段名常量
@@ -41,7 +43,7 @@ STAGE_LABELS = {
     STAGE_GOAL_CLARIFICATION: "目标澄清",
     STAGE_ASSESSMENT: "能力测评",
     STAGE_PLANNING: "学习计划",
-    STAGE_LEARNING: "每日任务",
+    STAGE_LEARNING: "学习任务",
     STAGE_EVALUATION: "结果验收",
     STAGE_PROFILE_UPDATE: "画像更新",
     STAGE_REVIEW: "复习",
@@ -69,8 +71,14 @@ def _guard_skill_profile(state) -> bool:
 
 
 def _guard_plan_confirmed(state) -> bool:
-    """已有学习计划**且用户已确认**，才允许进入每日任务（V0.3c：先确认后教学）。"""
-    return bool(state.get("current_plan")) and bool(state.get("plan_confirmed"))
+    """已有学习计划**且用户已确认**，才允许进入学习任务（V0.3c：先确认后教学）。
+
+    **必须用 `to_bool` 而不是 `bool()`**：这是"是否放行教学"的**唯一权威依据**。
+    旧状态文件里若存着 `"plan_confirmed": "false"`（模型把布尔写成字符串），
+    `bool("false") is True` → **未确认就开始教学**，而 `planning.is_confirmed`
+    却认为未确认，两处结论互相矛盾。
+    """
+    return bool(state.get("current_window")) and to_bool(state.get("plan_confirmed"))
 
 
 def _guard_submission(state) -> bool:
@@ -84,8 +92,12 @@ def _guard_latest_result(state) -> bool:
 
 
 def _guard_update_applied(state) -> bool:
-    """画像更新已应用，才允许从 profile_update 回到每日任务（V0.3e 回路）。"""
-    return bool(state.get("latest_result_applied"))
+    """画像更新已应用，才允许从 profile_update 回到学习任务（V0.3e 回路）。
+
+    同样用 `to_bool`：旧的 `bool("false") is True` 会让"未应用"被判成"已应用"，
+    从而在画像还没更新完时就回到学习任务。
+    """
+    return to_bool(state.get("latest_result_applied"))
 
 
 # (起始阶段, 目标阶段, 守卫函数, 守卫说明) —— 主干：线性推进
@@ -97,7 +109,7 @@ TRANSITIONS = (
     (STAGE_EVALUATION, STAGE_PROFILE_UPDATE, _guard_latest_result, "已产出验收结论"),
 )
 
-# 回路：画像更新完成后回到每日任务（继续下一个任务或重做当前任务）
+# 回路：画像更新完成后回到学习任务（继续下一个任务或重做当前任务）
 RESUME_TRANSITIONS = (
     (STAGE_PROFILE_UPDATE, STAGE_LEARNING, _guard_update_applied, "画像更新已应用"),
 )

@@ -80,7 +80,11 @@ def _boom(_prompt: str):
 # ---------------------------------------------------------------------------
 
 def test_all_gated_actions_are_registered():
-    """PRD 点名的四类动作必须全部登记，且都有可展示的说明。"""
+    """PRD 点名的四类动作必须全部登记，且都有可展示的说明。
+
+    契约钉桩：断言的是 `GATED_ACTIONS` 的**内容**，不调用被测函数 ——
+    **只防误删、不证明行为**（确认门是否真的拦住，由本文件其余用例覆盖）。
+    """
     expected = {
         ActionId.REBUILD_PLAN.value,
         ActionId.CHANGE_LEARNING_GOAL.value,

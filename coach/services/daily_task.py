@@ -1,4 +1,4 @@
-"""每日任务用例（原 `daily.py` 的 LLM 与展示部分）。
+"""学习任务用例（原 `daily.py` 的 LLM 与展示部分）。
 
 游标与任务查找等纯逻辑在 `coach.domain.cursor`；本模块只负责：
 1. describe_today_task()  把任务压成可注入对话的文本（教练照实呈现，不另编）
@@ -13,6 +13,8 @@ from coach.domain.cursor import get_progress
 from coach.domain.models import SubmissionVerdict
 from coach.llm import client
 from coach.prompts.tasks import SUBMISSION_SYSTEM_PROMPT
+from coach.services import to_bool
+from coach.services.planning import unit_label
 
 __all__ = [
     "describe_progress",
@@ -22,14 +24,20 @@ __all__ = [
 
 
 def describe_today_task(state) -> str:
-    """把今日任务压成可注入对话的文本。"""
+    """把今日任务压成可注入对话的文本。
+
+    单位随窗口走（`unit_label`）：碎片化用户是"次"，整块时间用户是"天" ——
+    与 `planning.describe_plan` 的口径保持一致，避免再把"天"这个旧单位写进
+    模型的权威状态里（那会让模型继续按"第几天"讲故事）。
+    """
     task = state.get("today_task") or {}
     if not task:
         return ""
     progress = get_progress(state)
     total_done = len(progress.get("completed") or [])
+    unit = unit_label(state)
     lines = [
-        f"- 今日任务：第 {task.get('day')} 天 · 第 {task.get('task')} 个"
+        f"- 今日任务：第 {task.get('day')} {unit} · 第 {task.get('task')} 个"
         f"（主题：{task.get('theme', '')}；已完成 {total_done} 个任务）",
         f"- 目标：{task.get('goal', '')}",
     ]
@@ -43,19 +51,20 @@ def describe_today_task(state) -> str:
         lines.append(f"- 完成标准：{task['done_criteria']}")
     lines.append("- 【权威】只围绕这一个任务讲解与引导；用户完成后请其提交结果，不要提前布置后面的任务")
     lines.append(
-        "- 【防冲突】若你之前的回复里提到过别的任务、别的天数或别的主题，"
+        "- 【防冲突】若你之前的回复里提到过别的任务、别的执行单元或别的主题，"
         "一律以本条“今日任务”为准，不要沿用那段自述"
     )
     return "\n".join(lines)
 
 
 def describe_progress(state) -> str:
-    """一行进度摘要，用于终端展示。"""
+    """一行进度摘要，用于终端展示（单位随 `unit_label`：碎片化是"次"，整块时间是"天"）。"""
     progress = get_progress(state)
     if progress.get("finished"):
         return "计划已全部完成"
-    total = len((state.get("current_plan") or {}).get("days") or [])
-    return (f"第 {progress['day']}/{total or '?'} 天 · "
+    total = len((state.get("current_window") or {}).get("days") or [])
+    unit = unit_label(state)
+    return (f"第 {progress['day']}/{total or '?'} {unit} · "
             f"第 {progress['task']} 个任务（已完成 {len(progress.get('completed') or [])} 个）")
 
 
@@ -82,7 +91,7 @@ def detect_submission(state, user_input: str) -> SubmissionVerdict | None:
     try:
         data = client.json_call(SUBMISSION_SYSTEM_PROMPT, user_content, label="submission_detect")
         verdict = SubmissionVerdict(
-            is_submission=bool(data.get("is_submission")),
+            is_submission=to_bool(data.get("is_submission")),
             content=str(data.get("content") or ""),
             reason=str(data.get("reason") or ""),
         )

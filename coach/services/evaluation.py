@@ -5,7 +5,7 @@
 2. 一致性守卫      由 `domain.models.EvaluationResult` 强制（掌握度由完成度推导；未完成不许 pass）
 3. apply_update()  **代码侧**更新画像（新旧平均）与薄弱点，并决定"推进游标 / 重做当前任务"
 
-判定失败（无 Key／网络异常）返回 None，保持 evaluation 状态，绝不误推进。
+判定失败（无 Key／网络异常／返回结构非法）返回 None，保持 evaluation 状态，绝不误推进。
 """
 
 from coach.domain.assessment_rules import derive_weak_points
@@ -41,16 +41,23 @@ def evaluate(state) -> EvaluationResult | None:
         data = client.json_call(
             EVALUATION_JUDGE_SYSTEM_PROMPT, user_content, label="evaluation_judge"
         )
+        # JSON 模式仍可能返回非对象（数组 / 字符串）—— 必须在守卫内归一，
+        # 否则下面的 `**data` 会抛 TypeError 并跳出兜底。
+        if not isinstance(data, dict):
+            raise TypeError(f"判定结果不是 JSON 对象：{type(data).__name__}")
+        # topic / day / task 由代码从 today_task 填；模型若重复给出这几个键，
+        # 直接 `**data` 会因"关键字重复"抛 TypeError，故先剔除。
+        payload = {k: v for k, v in data.items() if k not in ("topic", "day", "task")}
+        result = EvaluationResult(
+            topic=task.get("theme") or task.get("goal") or "",
+            day=task.get("day"),
+            task=task.get("task"),
+            **payload,
+        )
     except Exception as exc:                  # noqa: BLE001 —— 判定失败保持 evaluation
         print(f"[验收判定失败，保持在结果验收] {type(exc).__name__}: {exc}")
         return None
 
-    result = EvaluationResult(
-        topic=task.get("theme") or task.get("goal") or "",
-        day=task.get("day"),
-        task=task.get("task"),
-        **data,
-    )
     state["latest_result"] = result.model_dump()
     state["latest_result_applied"] = False
     return result
@@ -85,6 +92,11 @@ def apply_update(state) -> dict:
     else:
         state["pending_submission"] = None        # 清空提交，保留 today_task
         progress = get_progress(state)
+
+    # 4) 记账本次验收**尝试**（含重做）。这是"滚动=重估"唯一的速度信号：
+    #    `completed` 按 key 去重，看不出重做；`attempts` 会随重做增长。
+    progress["attempts"] = int(progress.get("attempts") or 0) + 1
+    state["plan_progress"] = progress
 
     state["latest_result_applied"] = True
     return {

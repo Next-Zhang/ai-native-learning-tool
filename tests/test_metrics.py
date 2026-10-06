@@ -16,7 +16,6 @@ r"""S-07 事件级指标采集与导出（PRD §3.5 日志与审计 / §3.1 M-03
 """
 
 import json
-import os
 import shutil
 import sys
 from pathlib import Path
@@ -57,7 +56,11 @@ def _events_jsonl(path: Path) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 def test_schema_contains_prd_fields():
-    """PRD §3.5 点名的字段一个都不能少（另加扩展字段 label）。"""
+    """PRD §3.5 点名的字段一个都不能少（另加扩展字段 label）。
+
+    契约钉桩：只断言字段元组，**只防误删、不证明行为**；
+    事件里真的写进这些字段，由本文件其余用例覆盖。
+    """
     expected = {
         "ts", "session_id", "stage", "event", "model",
         "tokens_in", "tokens_out", "latency_ms", "cost",
@@ -277,10 +280,16 @@ def test_export_cli_writes_file():
 
 
 def test_default_recorder_is_disabled():
-    """库默认不采集：避免测试/工具误写真实指标文件。"""
-    assert MetricsRecorder(path=_tmp_file("x.jsonl"), enabled=False).enabled is False
-    if not os.getenv("COACH_METRICS"):
-        assert metrics.get_recorder().enabled is False
+    """库默认不采集：避免测试/工具误写真实指标文件。
+
+    只有**显式** `COACH_METRICS=on` 才开启，所以这里不断言"一定是关"，
+    而是断言"默认 recorder 的开关 == 环境开关的解析结果"——
+    这样无论跑测试的机器有没有设这个变量，本用例都真的在校验。
+    """
+    assert MetricsRecorder().enabled is False
+    from coach.metrics import recorder as recorder_module
+
+    assert metrics.get_recorder().enabled is recorder_module._env_enabled()
 
 
 # ---------------------------------------------------------------------------

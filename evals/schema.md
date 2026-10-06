@@ -6,7 +6,8 @@
 ## 1. 评测边界：只评「非确定性判定」
 
 本评测集**只覆盖 LLM 判定点**。确定性逻辑（状态机守卫、计划清洗、分数聚合、薄弱点阈值、游标推进等）已由
-`tests/` 的 **73 个用例**（66 确定性 + 7 集成）覆盖，属于**固定回归集**，**不重复进入评测集**。
+`tests/` 的 **168 个用例**（161 确定性 + 7 条 live；无 Key 的 live 用例记 SKIP 且**不计入通过数**）覆盖，
+属于**固定回归集**，**不重复进入评测集**。
 
 | judge 值 | 被测函数 | 被测提示词 | 期望字段 |
 |---|---|---|---|
@@ -29,13 +30,13 @@
 | `input` | ✅ | object | 送入被测函数的输入（结构随 judge 变化，见 §4） |
 | `expected` | ✅ | object | 期望判定结果（结构随 judge 变化，见 §4） |
 | `rubric` | ✅ | string | **为什么这个期望是对的**（人工可复核的依据） |
-| `notes` | ❌ | string | 补充说明、已知争议点 |
+| `notes` | ❌ | string | 补充说明、已知争议点（`--show` 与 `--export-md` 都会渲染出来） |
 
 ## 3. 标注规则（最重要）
 
 1. **以生产提示词的口径为准**，不以标注者的个人偏好为准。每条 `expected` 必须能在对应 `*_SYSTEM_PROMPT` 里找到依据。
 2. **边界优先**：宁可多写"看起来很普通但其实容易判错"的用例（如"我会了"但无产出），也不要堆同质化的正常用例。
-3. **不确定就标注争议**：写进 `notes`，不要强行给一个标签。争议用例不计入一致率的分子/分母由复核决定。
+3. **不确定就标注争议**：写进 `notes`，不要强行给一个标签。**争议用例的处置在标注/复核阶段完成**（改标签或移出数据集）——`run_eval.py` 不做自动剔除，见 §6.5。
 4. **不得为了让结果好看而改标签**。标签只依据 rubric。
 5. **dev 与 holdout 严格分离**：调提示词时**只能看 dev**；holdout 用于发布判断，查看前不得据其反复调参（PRD §3.3.1 防泄漏规则）。
 
@@ -72,7 +73,7 @@
 "expected": { "completion": "completed | partial | not_completed", "next_action": "pass | retry | supplement" }
 ```
 
-| completion | 口径 | 对应 next_action（**由代码强制**，见 `evaluator.normalize_action`） |
+| completion | 口径 | 对应 next_action（**由代码强制**，见 `coach.domain.evaluation_rules.normalize_action`） |
 |---|---|---|
 | `completed` | 完全达成完成标准 | `pass` |
 | `partial` | 部分达成，有小错、缺步骤或边界未处理 | `supplement` |
@@ -93,11 +94,19 @@
 
 ```json
 "input": {
-  "plan": { "horizon_days": 7, "start_date": "2026-09-22", "days": [ { "day": 1, "theme": "...", "tasks": [ { "goal": "..." } ] } ] },
+  "plan": { "length": 3, "unit": "session", "start_date": "2026-09-22", "milestone_id": "M1",
+            "days": [ { "day": 1, "theme": "...", "tasks": [ { "goal": "..." } ] } ] },
   "user_input": "用户这句话"
 },
 "expected": { "confirmed": true }
 ```
+
+`plan` 就是**执行窗口** `state["current_window"]`：`length` = 单元数，`unit` = `session`（碎片化，按"次"）
+或 `day`（整块时间）。**旧字段名是 `horizon_days`，v0.14 起改为 `length`**（旧值由
+`state_schema.upgrade_window_shape` 迁移，见 `tests/test_stages.py`）。
+
+`run_eval.py` 把它原样交给 `planning.confirm_plan`，判定依据是 `planning.describe_plan()` 渲染出的摘要
+（**只读 `days`**；`length` 缺失时退回 `len(days)`）。所以数据集里的 `length` 必须与 `days` 的条数一致。
 
 `true` 仅当用户**明确同意开始**（"可以""没问题""就这样""开始吧""按这个来"）；含糊、反问、质疑、要求修改一律 `false`。
 
@@ -110,7 +119,7 @@
 "expected": {
   "learning_goal_keywords": ["Python", "数据分析"],
   "current_level_keywords": ["基础"],
-  "daily_minutes": 30,
+  "session_minutes": 30,
   "target_date": "一个月"
 }
 ```
@@ -119,7 +128,7 @@
 |---|---|
 | `learning_goal_keywords` | 列表中**全部**关键字须出现在抽取值中（大小写不敏感）。**空列表 = 该字段必须为空（null）** |
 | `current_level_keywords` | 同上 |
-| `daily_minutes` | 整数精确比对；`null` = 必须为 null（无法解析就宁缺勿错） |
+| `session_minutes` | 整数精确比对；`null` = 必须为 null（无法解析就宁缺勿错）。**旧字段名是 `daily_minutes`，已废弃** |
 | `target_date` | 去掉空白后精确比对；`null` = 必须为 null（如"尽快""年底"这类模糊表达） |
 
 **证据要求**：抽取只应采纳用户**明确说出**的信息，不得推测、补充常识或编造。
@@ -139,4 +148,9 @@
 1. **心理学领域代码尚未实现**（PRD S-02/S-05 = ⬜待实现）。心理学用例现阶段只能验证**判定提示词在心理学内容上的表现**，不能验证领域化的计划/出题逻辑；待 S-05 落地后价值完整。
 2. **`profile_extract` 的失败不可区分**：该函数在调用失败时返回"空画像"，与"用户确实没提供信息"在返回值上一致。因此该 judge 的 `error` 可能被误计为一致（当期望恰为全 null 时）。已在报告中标注该限制。
 3. **单次运行有波动**：即使 `temperature=0`，模型输出仍可能变化。判定一致率应按**重复运行**理解（PRD M-01 要求写清重复或容错规则）；建议发布判断时跑 ≥3 次取稳定值。
-4. **样本量小**：30 条仅够发现明显问题，**不足以支撑统计显著性结论**（PRD §3.3.4 已知例外）。
+4. **样本量小**：dev 30 条 / holdout 8 条仅够发现明显问题，**不足以支撑统计显著性结论**（PRD §3.3.4 已知例外）。
+5. **争议用例不做自动剔除**：`run_eval.py` 对每条用例一律计入分子/分母，没有"跳过争议条"的开关。
+   标注为争议的用例（写在 `notes` 里，`--show` / `--export-md` 会显示）必须在**复核阶段**决定处置：
+   要么按生产提示词口径定标签，要么把它移出数据集。**不要指望 runner 帮你去掉它**。
+6. **`rubric` 只做非空校验**：`run_eval.py` 只能检查 `rubric` 是否存在，无法判断它是否真的支撑该期望；
+   rubric 与生产提示词的口径一致性靠人工复核（见 README「待办」）。

@@ -1,10 +1,20 @@
 """学习需求画像的确定性规则（原 `state.py` 的画像部分）。
 
-关键规则：**空值不覆盖** —— "这轮没提到"不等于"这个信息不存在"。
+关键规则：
+- **空值不覆盖** —— "这轮没提到"不等于"这个信息不存在"。
+- **必填四项与可选项分开** —— `sessions_per_week` 可选（碎片化场景常无法承诺）。
 """
 
-# 四项必须齐全才能进入能力测评（状态机的第一道守卫）
-PROFILE_FIELDS = ("learning_goal", "current_level", "daily_minutes", "target_date")
+#: **必填四项**：齐全才能进入能力测评（状态机的第一道守卫）。
+#: `session_minutes` 是**单次**可投入时长，不是"每天总量"（见 architecture.md §11.3）。
+PROFILE_FIELDS = ("learning_goal", "current_level", "session_minutes", "target_date")
+
+#: **可选**字段：会被抽取与保存，但**不参与完备性判定**。
+#: 若把它算进必填，用户会被卡在澄清阶段反复追问"每周几次"。
+OPTIONAL_PROFILE_FIELDS = ("sessions_per_week",)
+
+#: 提示词要求模型抽取、且 `merge_profile` 会合并的全部字段。
+EXTRACTABLE_PROFILE_FIELDS = PROFILE_FIELDS + OPTIONAL_PROFILE_FIELDS
 
 
 def merge_profile(state, profile) -> list[str]:
@@ -15,7 +25,7 @@ def merge_profile(state, profile) -> list[str]:
     data = profile.model_dump() if hasattr(profile, "model_dump") else dict(profile)
 
     updated: list[str] = []
-    for field in PROFILE_FIELDS:
+    for field in EXTRACTABLE_PROFILE_FIELDS:
         value = data.get(field)
         # 跳过没提到 / 空白的值，保留 state 里已有的信息
         if value is None:
@@ -29,7 +39,7 @@ def merge_profile(state, profile) -> list[str]:
 
 
 def profile_complete(state) -> bool:
-    """四项（目标/水平/每日时间/期限）是否都已收集。"""
+    """**必填四项**（目标 / 水平 / 单次时长 / 期限）是否都已收集。"""
     for field in PROFILE_FIELDS:
         value = state.get(field)
         if value is None or value == "" or value == []:
@@ -38,7 +48,7 @@ def profile_complete(state) -> bool:
 
 
 def missing_profile_fields(state) -> list[str]:
-    """返回还缺失的字段名，便于提示教练"还差什么"。"""
+    """返回还缺失的**必填**字段名，便于提示教练"还差什么"。"""
     return [
         field for field in PROFILE_FIELDS
         if state.get(field) in (None, "", [])

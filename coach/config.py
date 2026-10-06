@@ -7,7 +7,7 @@
    由 `Settings.require_api_key()` 报错。
 2. **模型名/温度/base_url 只在此定义一处**，供全部服务与 `coach.llm` 复用；
    此前 `deepseek-chat` 硬编码在 6 个文件里。
-3. 路径常量（`BASE_DIR` / `DATA_DIR`）集中在此，避免各模块重复推导。
+3. 路径常量（`BASE_DIR` / `DATA_DIR` / `BACKUP_DIR`）集中在此，避免各模块重复推导。
 """
 
 import os
@@ -17,6 +17,8 @@ from pathlib import Path
 # 路径：本文件位于 <App_landing>/coach/config.py
 BASE_DIR = Path(__file__).resolve().parents[1]
 DATA_DIR = BASE_DIR / "data"
+#: 状态备份目录（`coach.storage.reset` 与 `coach.storage.state_store` 共用同一处定义）
+BACKUP_DIR = DATA_DIR / "backups"
 
 # 模型默认值（唯一来源）
 DEFAULT_MODEL = "deepseek-chat"

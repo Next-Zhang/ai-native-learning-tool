@@ -103,10 +103,18 @@ def test_reset_history_keeps_profile_plan_and_stage():
         _write_state(
             state_file,
             learning_goal="Python 数据分析",
-            daily_minutes=30,
+            session_minutes=30,
             current_stage="learning",
             skill_profile={"读取数据": 0.75},
-            current_plan={"horizon_days": 7, "days": []},
+            current_window={
+                "length": 2,                       # 当前窗口字段（旧名 horizon_days 已由 upgrade_window_shape 迁移）
+                "unit": "session",
+                "start_date": "2026-01-01",
+                "days": [
+                    {"day": 1, "theme": "读取数据", "tasks": [{"goal": "读 CSV"}]},
+                    {"day": 2, "theme": "分组聚合", "tasks": [{"goal": "groupby"}]},
+                ],
+            },
             plan_confirmed=True,
             plan_progress={"day": 2, "task": 1, "completed": ["1-1"], "finished": False},
             conversation_history=[{"role": "user", "content": "a"}] * 5,
@@ -116,10 +124,12 @@ def test_reset_history_keeps_profile_plan_and_stage():
 
         assert state["conversation_history"] == []                 # 历史清空
         assert state["learning_goal"] == "Python 数据分析"          # 画像保留
-        assert state["daily_minutes"] == 30
+        assert state["session_minutes"] == 30
         assert state["current_stage"] == "learning"                # 阶段保留
         assert state["skill_profile"] == {"读取数据": 0.75}
-        assert state["current_plan"]["horizon_days"] == 7
+        # 执行窗口原样保留（长度与单位都没被清掉/改写）
+        assert (state["current_window"]["length"],
+                state["current_window"]["unit"]) == (2, "session")
         assert state["plan_progress"]["completed"] == ["1-1"]
 
 
@@ -180,6 +190,91 @@ def test_no_backup_flag():
         reset_all(state_file=state_file, backup=False, backup_dir=backup_dir)
 
         assert not backup_dir.exists() or not list(backup_dir.glob("*.json"))
+
+
+# ---------------------------------------------------------------------------
+# 6) 状态文件的数据安全（v0.14 审计修复）
+# ---------------------------------------------------------------------------
+
+@contextmanager
+def _isolated_store():
+    """把 `state_store` 的路径临时指向一次性目录，退出时还原。"""
+    from coach.storage import state_store
+
+    original = (state_store.STATE_FILE, state_store.DATA_DIR, state_store.BACKUP_DIR)
+    with _workspace() as tmp:
+        state_store.STATE_FILE = tmp / "user_state.json"
+        state_store.DATA_DIR = tmp
+        state_store.BACKUP_DIR = tmp / "backups"
+        try:
+            yield tmp
+        finally:
+            (state_store.STATE_FILE,
+             state_store.DATA_DIR,
+             state_store.BACKUP_DIR) = original
+
+
+def test_save_state_is_atomic():
+    """**写入必须原子**（先写 .tmp 再 `os.replace`）。
+
+    旧实现直接 `open(path, "w")`：写到一半崩溃会留下半截 JSON，
+    下次加载判定损坏并**重建默认值** —— 等于静默丢掉全部学习数据。
+    """
+    from coach.storage import state_store
+
+    with _isolated_store() as tmp:
+        state_store.save_state({"learning_goal": "Python"})
+
+        assert state_store.STATE_FILE.exists()
+        assert not (tmp / "user_state.json.tmp").exists(), "不得留下临时文件"
+        written = json.loads(state_store.STATE_FILE.read_text(encoding="utf-8"))
+        assert written["learning_goal"] == "Python"
+
+
+def test_load_state_keeps_a_copy_of_broken_file():
+    """**损坏文件必须先留底再重建** —— 直接覆盖会让"写坏了"变成不可逆的数据丢失。"""
+    from coach.storage import state_store
+
+    with _isolated_store() as tmp:
+        state_store.STATE_FILE.write_text("{ 半截 JSON", encoding="utf-8")
+
+        state = state_store.load_state()
+
+        assert state["learning_goal"] is None, "应重建为默认状态"
+        kept = list((tmp / "backups").glob("user_state_broken_*.json"))
+        assert kept, "损坏的原文件必须留底"
+        assert "半截 JSON" in kept[0].read_text(encoding="utf-8")
+
+
+def test_load_state_rebuilds_non_object_json_without_crashing():
+    """合法 JSON 但**不是对象**（`[]` / `null` / `"text"`）同样是损坏，不能崩。"""
+    from coach.storage import state_store
+
+    for bad in ("[]", "null", '"text"'):
+        with _isolated_store() as tmp:
+            state_store.STATE_FILE.write_text(bad, encoding="utf-8")
+
+            state = state_store.load_state()
+
+            assert isinstance(state, dict), bad
+            assert state["current_stage"], bad
+            assert list((tmp / "backups").glob("user_state_broken_*.json")), bad
+
+
+def test_load_state_upgrades_nested_plan_progress_attempts():
+    """v0.14：`ensure_keys` 只补**顶层**键，嵌套的 `plan_progress.attempts` 要单独升级。"""
+    from coach.storage import state_store
+
+    with _isolated_store():
+        old = copy.deepcopy(DEFAULT_STATE)
+        old["plan_progress"] = {"day": 1, "task": 1, "completed": [], "finished": False}
+        state_store.STATE_FILE.write_text(
+            json.dumps(old, ensure_ascii=False), encoding="utf-8"
+        )
+
+        state = state_store.load_state()
+
+        assert state["plan_progress"]["attempts"] == 0, "嵌套键必须被补上"
 
 
 # ---------------------------------------------------------------------------

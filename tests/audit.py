@@ -240,6 +240,11 @@ def build_report(rows_by_file: dict) -> dict:
         "verify_with_key": len(all_rows) - len(inverse),
         "assert_total": sum(r["asserts"] for r in all_rows),
         "zero_assert": [r["name"] for r in all_rows if r["asserts"] == 0],
+        # 「没有显式 assert」不等于「没有验证」：只调用了被测函数、靠"不抛异常"判定
+        # 的用例是**隐式断言**（有效）。只有既无断言、又没碰任何被测函数的才是真空用例。
+        "zero_assert_vacuous": [
+            r["name"] for r in all_rows if r["asserts"] == 0 and r["coach_calls"] == 0
+        ],
         "single_assert": sum(1 for r in all_rows if r["asserts"] == 1),
         "tiers": dict(tiers),
         "shallow": [r["name"] for r in executed if r["asserts"] <= 1],
@@ -298,7 +303,8 @@ def render(rows_by_file: dict, report: dict, show_list: bool) -> str:
                 f"✅ **已修复**：{report['skipped_without_key']} 条 live 用例在无 Key 时显式 "
                 f"`raise SkipTest`，runner（`tests/_runner.py`，已接入 "
                 f"{report.get('files_using_skip')} 个测试文件）单列 SKIP 并**不计入通过数**——"
-                f"「109 通过 / 7 跳过」是诚实读数。"
+                f"「{report['verify_no_key']} 通过 / {report['skipped_without_key']} 跳过」"
+                f"是诚实读数（数字由本脚本按当前用例数算出，不写死）。"
             )
         else:
             findings.append(
@@ -311,12 +317,22 @@ def render(rows_by_file: dict, report: dict, show_list: bool) -> str:
             f"它们**只在缺 Key 时校验失败兜底**，一旦配了 Key 就什么都不验。"
             f"名单：{'、'.join(report['inverse_names'])}"
         )
-    if report["zero_assert"]:
-        findings.append(f"**{len(report['zero_assert'])} 条没有任何断言**：{report['zero_assert']}")
+    vacuous = report["zero_assert_vacuous"]
+    implicit = [name for name in report["zero_assert"] if name not in vacuous]
+    if vacuous:
+        findings.append(
+            f"**{len(vacuous)} 条是真空用例**（既无显式断言、也没有调用任何被测函数）：{vacuous}"
+        )
+    if implicit:
+        findings.append(
+            f"（信息性）**{len(implicit)} 条没有显式 `assert`**：{implicit} —— "
+            "属「调用后不抛异常」型**隐式断言**（被测函数一旦抛错，用例即失败），"
+            "仍然有效，此处仅作提示。"
+        )
     if report["shallow"]:
         findings.append(
-            f"（信息性）**{len(report['shallow'])} 条只有 1 处断言**——不一定有问题，"
-            "但薄断言容易在重构后失去意义，值得抽查。"
+            f"（信息性）**{len(report['shallow'])} 条断言 ≤ 1 处**——不一定有问题，"
+            "但薄断言容易在重构后失去意义，值得抽查（含上面那些没有显式断言的用例）。"
         )
     contract = [r for rows in rows_by_file.values() for r in rows if r["tier"] == "contract"]
     if contract:

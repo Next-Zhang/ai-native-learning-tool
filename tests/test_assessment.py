@@ -190,7 +190,7 @@ def test_live_plan_generation():
 
     state = copy.deepcopy(DEFAULT_STATE)
     state.update({"learning_goal": "Python 数据分析", "current_level": "学过一点基础",
-                  "daily_minutes": 30, "target_date": "1个月"})
+                  "session_minutes": 30, "target_date": "1个月"})
     state["current_stage"] = STAGE_ASSESSMENT
 
     assert ensure_plan(state) is True

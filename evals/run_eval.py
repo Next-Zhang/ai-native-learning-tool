@@ -60,7 +60,7 @@ EXPECTED_KEYS = {
     "profile_extract": {
         "learning_goal_keywords",
         "current_level_keywords",
-        "daily_minutes",
+        "session_minutes",
         "target_date",
     },
 }
@@ -233,6 +233,10 @@ def print_case(case) -> None:
     print("  期望：")
     print(_render_value(case["expected"], 4))
     print(f"  判定依据：{case['rubric']}")
+    # `notes` 是 schema.md §2 声明的可选字段（补充说明 / 已知争议点），
+    # 必须在查看器里显示出来 —— 否则标注者写进 notes 的争议点在复核时看不见。
+    if case.get("notes"):
+        print(f"  备注：{case['notes']}")
 
 
 def write_markdown(cases, path: Path, title: str = "评测集总览") -> None:
@@ -270,6 +274,9 @@ def write_markdown(cases, path: Path, title: str = "评测集总览") -> None:
         lines.append("")
         lines.append(f"**判定依据**：{case['rubric']}")
         lines.append("")
+        if case.get("notes"):
+            lines.append(f"**备注**：{case['notes']}")
+            lines.append("")
 
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines), encoding="utf-8")
@@ -345,7 +352,7 @@ def run_case(case) -> dict:
     if judge == "plan_confirm":
         from coach.services import planning
 
-        state = {"current_plan": case["input"]["plan"], "plan_confirmed": False}
+        state = {"current_window": case["input"]["plan"], "plan_confirmed": False}
         verdict = planning.confirm_plan(state, case["input"]["user_input"])
         if verdict is None:
             raise CaseError("confirm_plan 返回 None（判定失败）")
@@ -358,7 +365,7 @@ def run_case(case) -> dict:
         return {
             "learning_goal": profile.learning_goal,
             "current_level": profile.current_level,
-            "daily_minutes": profile.daily_minutes,
+            "session_minutes": profile.session_minutes,
             "target_date": profile.target_date,
         }
 
@@ -381,9 +388,11 @@ def compare(case, actual) -> tuple[bool, str]:
     exp = case["expected"]
 
     if judge in ("assessment_verdict", "submission_detect", "plan_confirm"):
-        key = next(iter(exp))
-        ok = actual.get(key) == exp[key]
-        return ok, f"{key} 期望={exp[key]!r} 实际={actual.get(key)!r}"
+        # 这三类各只有**一个**期望字段，直接按 schema 解包取键 ——
+        # 不用 next(iter(exp))：那会把"expected 只有一键"这个前提藏进字典的迭代顺序里。
+        (key,) = EXPECTED_KEYS[judge]
+        ok = actual.get(key) == exp.get(key)
+        return ok, f"{key} 期望={exp.get(key)!r} 实际={actual.get(key)!r}"
 
     if judge == "evaluation_completion":
         bad = [k for k in exp if actual.get(k) != exp[k]]
@@ -402,8 +411,8 @@ def compare(case, actual) -> tuple[bool, str]:
             actual.get("current_level"), exp.get("current_level_keywords") or []
         ):
             bad.append(f"current_level 期望含{exp.get('current_level_keywords')} 实际={actual.get('current_level')!r}")
-        if actual.get("daily_minutes") != exp.get("daily_minutes"):
-            bad.append(f"daily_minutes 期望={exp.get('daily_minutes')!r} 实际={actual.get('daily_minutes')!r}")
+        if actual.get("session_minutes") != exp.get("session_minutes"):
+            bad.append(f"session_minutes 期望={exp.get('session_minutes')!r} 实际={actual.get('session_minutes')!r}")
         actual_td = actual.get("target_date")
         if isinstance(actual_td, str):
             actual_td = actual_td.strip() or None

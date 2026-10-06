@@ -5,8 +5,8 @@
 """
 
 from coach.config import API_KEY_ENV, get_settings
-from coach.domain.cursor import get_progress
-from coach.domain.profile_rules import PROFILE_FIELDS
+from coach.domain.plan_rules import current_milestone
+from coach.domain.profile_rules import OPTIONAL_PROFILE_FIELDS, PROFILE_FIELDS
 from coach.domain.stages import stage_label
 from coach.metrics import recorder as metrics
 from coach.orchestration.turn import TurnResult, run_turn
@@ -15,7 +15,7 @@ from coach.services.maintenance import SCOPE_ALL, SCOPE_HISTORY, perform_reset
 from coach.services.planning import is_confirmed
 from coach.storage.state_store import load_state
 
-__all__ = ["ask_confirmation", "main", "render_turn"]
+__all__ = ["ask_confirmation", "format_plan_status", "format_profile", "main", "render_turn"]
 
 # 确认提示接受的肯定/否定写法；其它一律视为"未确认"（fail-closed）
 _CONFIRM_YES = ("y", "yes", "是", "确认", "确定", "好", "可以")
@@ -24,31 +24,61 @@ _CONFIRM_NO = ("n", "no", "否", "取消", "不", "不用", "不要")
 FIELD_LABELS = {
     "learning_goal": "学习目标",
     "current_level": "当前水平",
-    "daily_minutes": "每天可投入",
+    "session_minutes": "单次可投入",
     "target_date": "期望期限",
+    "sessions_per_week": "每周约",
 }
 
 
 def format_profile(state) -> str:
-    """把已收集的画像字段格式化成一行，便于肉眼确认。"""
+    """把已收集的画像字段格式化成一行，便于肉眼确认。
+
+    必填四项 + **已知的**可选项（每周几次）。
+    """
     parts = []
-    for field in PROFILE_FIELDS:
+    for field in PROFILE_FIELDS + OPTIONAL_PROFILE_FIELDS:
         value = state.get(field)
         if value in (None, "", []):
             continue
-        if field == "daily_minutes":
+        if field == "session_minutes":
             value = f"{value} 分钟"
+        elif field == "sessions_per_week":
+            value = f"{value} 次"
         parts.append(f"{FIELD_LABELS[field]}={value}")
     return " | ".join(parts) if parts else "（尚未收集到任何信息）"
 
 
+def _window_length(window: dict) -> int:
+    """执行窗口的长度（单位见 `unit`；单位是"次"或"天"）。
+
+    `length` 缺失/为 None 时退回 `days` 的实际条数 —— 旧状态文件只有 `horizon_days`
+    （由 `domain.state_schema.upgrade_window_shape` 补出 `length`），展示层必须容错，
+    否则会打印成 "None 次"。
+    """
+    return window.get("length") or len(window.get("days") or []) or 1
+
+
 def format_plan_status(state) -> str:
-    """计划状态一句话，用于终端展示。"""
-    plan = state.get("current_plan") or {}
-    if not plan:
+    """计划状态一句话，用于终端展示（**路线图进度 + 执行窗口**）。"""
+    window = state.get("current_window") or {}
+    if not window:
         return "未生成"
+
+    # "当前里程碑"的定义只有一个来源：`domain.plan_rules.current_milestone`
+    # （它在 `roadmap.current_milestone` 缺失时会退回第一个未完成的里程碑）。
+    roadmap = state.get("roadmap") or {}
+    milestones = roadmap.get("milestones") or []
+    current = current_milestone(state)
+
     status = "已确认" if is_confirmed(state) else "待确认"
-    return f"{plan.get('horizon_days', '?')} 天 / {status}"
+    unit = "次" if (window.get("unit") or "session") == "session" else "天"
+    length = _window_length(window)
+
+    if current and milestones:
+        index = milestones.index(current) + 1
+        return (f"{index}/{len(milestones)} {current.get('title', '')}"
+                f" · 本窗口 {length} {unit} / {status}")
+    return f"{length} {unit} / {status}"
 
 
 def _format_sources(sources) -> str:
@@ -85,9 +115,15 @@ def render_turn(result: TurnResult, state) -> None:
         print(f"[测评] 薄弱点：{'、'.join(result.summary['weak_points']) or '（无）'}")
 
     if result.plan_created:
-        plan = state.get("current_plan") or {}
-        themes = "、".join(day.get("theme", "") for day in plan.get("days", []))
-        print(f"[计划] 已生成 {plan.get('horizon_days')} 天计划"
+        roadmap = state.get("roadmap") or {}
+        plan = state.get("current_window") or {}
+        milestones = roadmap.get("milestones") or []
+        if milestones:
+            titles = " → ".join(m.get("title", "") for m in milestones)
+            print(f"[路线图] {len(milestones)} 个里程碑：{titles}")
+        unit = "次" if (plan.get("unit") or "session") == "session" else "天"
+        themes = "、".join(day.get("theme", "") for day in (plan.get("days") or []))
+        print(f"[窗口] 已生成 {_window_length(plan)} {unit} 计划"
               f"（起始 {plan.get('start_date')}）：{themes}")
 
     if result.confirmation is not None:
@@ -97,7 +133,9 @@ def render_turn(result: TurnResult, state) -> None:
             print(f"[计划] 尚未确认：{result.confirmation.reason}")
 
     if result.task_created:
-        print(f"[任务] 今日任务（第 {result.task_created['day']} 天 · "
+        window_unit = ((state.get("current_window") or {}).get("unit") or "session")
+        unit = "次" if window_unit == "session" else "天"
+        print(f"[任务] 当前任务（第 {result.task_created['day']} {unit} · "
               f"第 {result.task_created['task']} 个）："
               f"{result.task_created['goal']}（预计 {result.task_created.get('minutes', 0)} 分钟）")
 
@@ -122,7 +160,11 @@ def render_turn(result: TurnResult, state) -> None:
         print(f"[任务] {action_text}")
 
     if result.plan_finished:
-        print("[计划] 本窗口计划已全部完成（滚动重排将在后续版本实现）")
+        print("[计划] 本窗口计划已全部完成")
+    if result.window_rolled:
+        # S-12 已实现：窗口走完后由 `planning.window_roll` 滚动到下一个里程碑。
+        # （旧文案写"滚动重排将在后续版本实现"，与实现不符。）
+        print("[计划] 已滚动到下一个里程碑（按实际速度重估了后续估计）")
 
     for from_stage, to_stage in result.transitions:
         print(f"[阶段] {stage_label(from_stage)} → {stage_label(to_stage)}")
@@ -131,7 +173,7 @@ def render_turn(result: TurnResult, state) -> None:
     if state.get("skill_profile"):
         print(f"[状态] 能力画像={state['skill_profile']} | 薄弱点={state.get('weak_points') or []}")
     print(f"[状态] 学习计划={format_plan_status(state)}")
-    if state.get("current_plan"):
+    if state.get("current_window"):
         print(f"[状态] 计划进度={describe_progress(state)}")
 
 

@@ -16,7 +16,6 @@ r"""指标导出 CLI（PRD §3.3.4 必过项④：`python -m coach.metrics.expor
 import argparse
 import csv
 import json
-import sys
 from pathlib import Path
 
 from coach.metrics.recorder import SCHEMA_FIELDS, default_events_path

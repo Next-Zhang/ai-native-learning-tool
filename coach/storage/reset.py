@@ -18,12 +18,11 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 
-from coach.config import DATA_DIR
+from coach.config import BACKUP_DIR, DATA_DIR
 from coach.domain.stages import ALL_STAGES
 from coach.domain.state_schema import DEFAULT_STATE
 from coach.storage.state_store import STATE_FILE
 
-BACKUP_DIR = DATA_DIR / "backups"
 KEEP_BACKUPS = 5
 
 __all__ = [
@@ -42,12 +41,20 @@ __all__ = [
 # 基础读写（都带路径参数，便于测试用临时文件）
 # ---------------------------------------------------------------------------
 
+def _default_state() -> dict:
+    """默认状态的**深拷贝**（多处重置都要用；共享可变对象会污染 DEFAULT_STATE）。"""
+    return json.loads(json.dumps(DEFAULT_STATE))
+
+
 def _load(state_file: Path) -> dict:
-    """读取状态文件；不存在或损坏时返回默认状态的深拷贝。"""
+    """读取状态文件；不存在、损坏或不是 JSON 对象时返回默认状态的深拷贝。"""
     try:
-        return json.loads(Path(state_file).read_text(encoding="utf-8"))
+        state = json.loads(Path(state_file).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return json.loads(json.dumps(DEFAULT_STATE))
+        return _default_state()
+    # `[]` / `null` / `"..."` 都是合法 JSON 却不是状态对象；旧实现会让
+    # `clear_history()` 以 AttributeError 崩掉，与本函数声明的"损坏 -> 默认值"不符。
+    return state if isinstance(state, dict) else _default_state()
 
 
 def _save(state: dict, state_file: Path) -> None:
@@ -111,7 +118,7 @@ def reset_all(state_file: Path = STATE_FILE, backup: bool = True,
     """完全重置为默认状态（回到目标澄清）。"""
     if backup:
         backup_state(state_file, backup_dir)
-    state = json.loads(json.dumps(DEFAULT_STATE))
+    state = _default_state()
     _save(state, state_file)
     return state
 
@@ -134,7 +141,7 @@ def reset_to_stage(stage: str, state_file: Path = STATE_FILE, backup: bool = Tru
         raise ValueError(f"未知阶段: {stage}（可选：{'、'.join(ALL_STAGES)}）")
     if backup:
         backup_state(state_file, backup_dir)
-    state = json.loads(json.dumps(DEFAULT_STATE))
+    state = _default_state()
     state["current_stage"] = stage
     _save(state, state_file)
     return state

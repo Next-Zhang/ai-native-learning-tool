@@ -1,4 +1,4 @@
-r"""V0.3d 每日任务验收测试（纯 Python 断言脚本）。
+r"""V0.3d 学习任务验收测试（纯 Python 断言脚本）。
 
 运行（在 App_landing 目录下）：
     .\.venv\Scripts\python.exe tests\test_daily.py
@@ -36,27 +36,30 @@ from coach.services.daily_task import describe_progress, detect_submission
 
 
 def _plan(days=None) -> dict:
+    """构造一个**当前结构**的执行窗口（v0.14 起字段是 `length`，不是 `horizon_days`）。"""
+    days = days if days is not None else [
+        {
+            "day": 1, "theme": "读取数据",
+            "tasks": [
+                {"goal": "读取 CSV", "material": "教程", "exercise": "写读取代码",
+                 "minutes": 30, "done_criteria": "能读出前 5 行"},
+                {"goal": "查看数据", "material": "教程", "exercise": "用 head()",
+                 "minutes": 20, "done_criteria": "能解释 head() 的作用"},
+            ],
+        },
+        {
+            "day": 2, "theme": "分组聚合",
+            "tasks": [
+                {"goal": "groupby 分组", "material": "教程", "exercise": "分组求均值",
+                 "minutes": 30, "done_criteria": "能算出分组均值"},
+            ],
+        },
+    ]
     return {
-        "horizon_days": 2,
+        "length": len(days),              # 窗口长度（旧字段 horizon_days 由 upgrade_window_shape 迁移）
+        "unit": "session",                # 单次 30 分钟 -> 碎片化，单位是“次”
         "start_date": "2026-01-01",
-        "days": days if days is not None else [
-            {
-                "day": 1, "theme": "读取数据",
-                "tasks": [
-                    {"goal": "读取 CSV", "material": "教程", "exercise": "写读取代码",
-                     "minutes": 30, "done_criteria": "能读出前 5 行"},
-                    {"goal": "查看数据", "material": "教程", "exercise": "用 head()",
-                     "minutes": 20, "done_criteria": "能解释 head() 的作用"},
-                ],
-            },
-            {
-                "day": 2, "theme": "分组聚合",
-                "tasks": [
-                    {"goal": "groupby 分组", "material": "教程", "exercise": "分组求均值",
-                     "minutes": 30, "done_criteria": "能算出分组均值"},
-                ],
-            },
-        ],
+        "days": days,
     }
 
 
@@ -65,10 +68,10 @@ def _learning_state(plan=None, **extra) -> dict:
     state.update({
         "learning_goal": "Python 数据分析",
         "current_level": "学过一点基础",
-        "daily_minutes": 30,
+        "session_minutes": 30,
         "target_date": "1个月",
         "current_stage": STAGE_LEARNING,
-        "current_plan": plan if plan is not None else _plan(),
+        "current_window": plan if plan is not None else _plan(),
         "plan_confirmed": True,
         "plan_progress": {"day": 1, "task": 1, "completed": [], "finished": False},
     })
@@ -81,7 +84,11 @@ def _learning_state(plan=None, **extra) -> dict:
 # ---------------------------------------------------------------------------
 
 def test_get_progress_defaults_and_merge():
-    assert get_progress({}) == {"day": 1, "task": 1, "completed": [], "finished": False}
+    # 形状是**规格**：v0.14 给 plan_progress 加了 `attempts`（验收尝试次数，含重做），
+    # 这里写全字段 —— 以后再加字段就该在本用例上显式失败一次，逼人确认兼容性。
+    assert get_progress({}) == {
+        "day": 1, "task": 1, "completed": [], "finished": False, "attempts": 0,
+    }
 
     # 部分字段 -> 用默认值补齐
     progress = get_progress({"plan_progress": {"day": 3}})
@@ -173,10 +180,17 @@ def test_build_today_task_none_when_plan_finished():
 
 
 def test_describe_progress_line():
+    """单位必须随窗口走：`session_minutes=30` → 碎片化 → "次"（不是写死的"天"）。"""
     state = _learning_state()
     build_today_task(state)
     line = describe_progress(state)
-    assert "第 1/2 天" in line and "第 1 个任务" in line
+    assert "第 1/2 次" in line and "第 1 个任务" in line
+
+    # 整块时间用户（>= 45 分钟）仍显示"天" —— 旧模型没有被破坏
+    long_state = _learning_state()
+    long_state["session_minutes"] = 60
+    build_today_task(long_state)
+    assert "天" in describe_progress(long_state)
 
 
 # ---------------------------------------------------------------------------
@@ -247,6 +261,35 @@ def test_live_submission_detection():
     assert state2["pending_submission"] is not None
     assert "read_csv" in state2["pending_submission"]["content"]
     assert try_advance(state2) == STAGE_EVALUATION
+
+
+# ---------------------------------------------------------------------------
+# 6) 模型把布尔写成字符串时，绝不能误判（v0.14 审计修复）
+# ---------------------------------------------------------------------------
+
+def test_detect_submission_rejects_string_false():
+    """`{"is_submission": "false"}` 必须被当成"**不是提交**"（fail-closed）。
+
+    回归自真实缺陷：`bool("false") is True` —— 用户只是**问问题**，却会被记成
+    "已提交"，从而误进入验收（误记账、误验收）。
+    """
+    from coach.llm import client as llm_client
+
+    original = llm_client.json_call
+    llm_client.json_call = lambda *a, **k: {
+        "is_submission": "false", "content": "", "reason": "这是在提问，不是提交",
+    }
+    try:
+        state = _learning_state()
+        build_today_task(state)                  # detect_submission 要求先有今日任务
+        state["pending_submission"] = None
+
+        verdict = detect_submission(state, "这个函数怎么写？")
+
+        assert verdict is not None and verdict.is_submission is False
+        assert state["pending_submission"] is None, "提问绝不能被记成提交"
+    finally:
+        llm_client.json_call = original
 
 
 # ---------------------------------------------------------------------------

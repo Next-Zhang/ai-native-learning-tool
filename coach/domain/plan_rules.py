@@ -1,8 +1,18 @@
 """学习计划的确定性规则（原 `planner.py` 的纯函数部分）。
 
-关键设计：
-- 窗口是"步长"不是"总时长"：目标是 3 个月，也每次只排最近 7 天（期限不足 7 天按实际天数）。
-- 天数与结构清洗都在代码里完成，LLM 只负责"写内容"。
+双层结构（见 `docs/architecture.md` §11）
+----------------------------------------
+- **路线图 `roadmap`**：目标 → **里程碑**，**不滚动**；只有里程碑达成或目标变更才更新。
+- **执行窗口 `current_window`**：可执行单元列表，**滚动**；窗口长度 = 当前里程碑的
+  `sessions_est`（所以**不固定 3/7 天**）。
+
+**单位是"次"不是"天"**：碎片化用户可能一天学 3 次、也可能 3 天学 1 次。
+`plan_unit()` 按单次时长决定单位 —— `>= 45 分钟`视为"整块时间"，切回 `day`，
+这样**旧的 7 天窗口模型仍然可用**（旧资产不废弃）。
+
+其他关键设计：
+- 结构与清洗都在代码里完成，LLM 只负责"写内容"。
+- **任务粒度由代码强制**：单任务时长 ≤ 单次可投入时长（`session_minutes`）。
 """
 
 import re
@@ -10,10 +20,37 @@ import re
 from coach.domain.models import PlanTask
 
 # 参数
-DEFAULT_HORIZON_DAYS = 7
-MAX_HORIZON_DAYS = 7
-MIN_HORIZON_DAYS = 1
 MAX_TASKS_PER_DAY = 3
+
+#: 模型没给任务时长时的兜底（分钟）
+DEFAULT_TASK_MINUTES = 30
+#: 单任务时长的下限（避免被压成 0 或负数）
+MIN_TASK_MINUTES = 5
+
+# --- 计划单位 ---------------------------------------------------------------
+UNIT_SESSION = "session"      # 碎片化（默认）：一个执行单元 = 一次坐下来
+UNIT_DAY = "day"              # 整块时间：一个执行单元 = 一天
+
+#: 单次时长达到此值即视为"整块时间"，单位切回 `day`
+UNIT_DAY_THRESHOLD_MINUTES = 45
+
+# --- 窗口长度 ---------------------------------------------------------------
+DEFAULT_WINDOW_LENGTH = 3
+MIN_WINDOW_LENGTH = 1
+MAX_WINDOW_LENGTH = 7
+
+# --- 里程碑状态 -------------------------------------------------------------
+MILESTONE_PENDING = "pending"
+MILESTONE_IN_PROGRESS = "in_progress"
+MILESTONE_DONE = "done"
+
+#: 兜底路线图切几个里程碑（**确定性兜底**用）
+DEFAULT_MILESTONE_COUNT = 3
+
+#: 模型产出的里程碑**上限**，与 `ROADMAP_SYSTEM_PROMPT` 的"3~5 个"对齐。
+#: **与 `DEFAULT_MILESTONE_COUNT` 语义不同**：后者是"兜底时切几个"。
+#: 若拿它当产出上限，提示词要的第 4、5 个会被静默裁掉。
+MAX_MILESTONE_COUNT = 5
 
 # 中文数字（含"两""半"）
 _CN_DIGITS = {
@@ -61,17 +98,174 @@ def parse_target_days(text) -> int | None:
     return max(1, int(round(days)))
 
 
-def plan_horizon(state) -> int:
-    """本轮计划窗口天数：min(7, 期望期限)；解析不出则默认 7 天。"""
+def plan_unit(state) -> str:
+    """计划单位：`session`（碎片化，默认）或 `day`（整块时间）。
+
+    `session_minutes >= UNIT_DAY_THRESHOLD_MINUTES` 视为整块时间 ——
+    这样旧的 7 天窗口模型仍然可用（**旧资产不废弃**）。
+    """
+    try:
+        minutes = int(state.get("session_minutes") or 0)
+    except (TypeError, ValueError):
+        minutes = 0
+    return UNIT_DAY if minutes >= UNIT_DAY_THRESHOLD_MINUTES else UNIT_SESSION
+
+
+# ---------------------------------------------------------------------------
+# 路线图（长期，不滚动）
+# ---------------------------------------------------------------------------
+
+def _to_estimate(value) -> int:
+    """把 `sessions_est` 归一成 [MIN_WINDOW_LENGTH, MAX_WINDOW_LENGTH] 内的整数。"""
+    try:
+        number = int(value) if value else DEFAULT_WINDOW_LENGTH
+    except (TypeError, ValueError):
+        number = DEFAULT_WINDOW_LENGTH
+    return max(MIN_WINDOW_LENGTH, min(MAX_WINDOW_LENGTH, number))
+
+
+def _roadmap_payload(state, milestones: list[dict], *, source: str = "generated") -> dict:
+    """组装路线图结构，并把第一个里程碑置为进行中。"""
+    for item in milestones:
+        item["status"] = MILESTONE_PENDING
+    if milestones:
+        milestones[0]["status"] = MILESTONE_IN_PROGRESS
+    return {
+        "goal": state.get("learning_goal") or "",
+        "unit": plan_unit(state),
+        "milestones": milestones,
+        "current_milestone": milestones[0]["id"] if milestones else None,
+        # generated | fallback | user_provided（I-7：用户自带计划时 original 存原稿）
+        "source": source,
+        "original": None,
+        "version": 1,
+    }
+
+
+def fallback_roadmap(state, count: int = DEFAULT_MILESTONE_COUNT) -> dict:
+    """模型不可用时的**确定性**路线图：按薄弱点（没有则按目标）切分里程碑。"""
+    goal = state.get("learning_goal") or "基础内容"
+    topics = [t for t in (state.get("weak_points") or []) if t] or [goal]
+
+    milestones: list[dict] = []
+    for index in range(max(1, count)):
+        topic = topics[index % len(topics)]
+        milestones.append({
+            "id": f"M{index + 1}",
+            "title": f"{topic} 强化",
+            "topics": [topic],
+            "sessions_est": DEFAULT_WINDOW_LENGTH,
+            "status": MILESTONE_PENDING,
+        })
+    return _roadmap_payload(state, milestones, source="fallback")
+
+
+def normalize_roadmap(data, state, *, count: int = DEFAULT_MILESTONE_COUNT) -> dict:
+    """清洗 LLM 产出的路线图：限制数量、重编号、丢弃空里程碑、归一估计值。"""
+    raw = data.get("milestones") if isinstance(data, dict) else None
+
+    milestones: list[dict] = []
+    for item in raw or []:
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title") or "").strip()
+        topics = [str(t).strip() for t in (item.get("topics") or []) if str(t).strip()]
+        if not title and not topics:
+            continue                                  # 全空里程碑丢弃
+        milestones.append({
+            "id": f"M{len(milestones) + 1}",
+            "title": title or (topics[0] if topics else f"阶段 {len(milestones) + 1}"),
+            "topics": topics,
+            "sessions_est": _to_estimate(item.get("sessions_est")),
+            "status": MILESTONE_PENDING,
+        })
+        if len(milestones) >= count:
+            break
+
+    if not milestones:
+        return fallback_roadmap(state, count=count)   # 一个可用里程碑都没有 -> 整体兜底
+    return _roadmap_payload(state, milestones)
+
+
+def current_milestone(state) -> dict | None:
+    """路线图里**正在进行**的里程碑；没有路线图返回 None。"""
+    roadmap = state.get("roadmap") or {}
+    milestones = roadmap.get("milestones") or []
+    if not milestones:
+        return None
+
+    target = roadmap.get("current_milestone")
+    for item in milestones:
+        if target and item.get("id") == target:
+            return item
+    for item in milestones:                            # 没标记就取第一个未完成的
+        if item.get("status") != MILESTONE_DONE:
+            return item
+    return None
+
+
+def advance_milestone(state) -> bool:
+    """把当前里程碑标记为完成并切到下一个；**没有下一个则返回 False**。
+
+    返回 False 表示"整张路线图已走完" —— 调用方据此决定是否提示用户重排目标。
+    """
+    roadmap = state.get("roadmap") or {}
+    milestones = roadmap.get("milestones") or []
+    current = current_milestone(state)
+    if not current:
+        return False
+
+    current["status"] = MILESTONE_DONE
+    for item in milestones:
+        if item.get("status") != MILESTONE_DONE:
+            item["status"] = MILESTONE_IN_PROGRESS
+            roadmap["current_milestone"] = item["id"]
+            return True
+    roadmap["current_milestone"] = None
+    return False
+
+
+def window_length(state) -> int:
+    """本执行窗口的长度（单位由 `plan_unit` 决定）。
+
+    - **有路线图** → = 当前里程碑的 `sessions_est`（所以**不固定 3/7**）
+    - **无路线图** → = min(3, 期望期限天数)；期限不足 3 天按实际
+    """
+    milestone = current_milestone(state)
+    if milestone:
+        return _to_estimate(milestone.get("sessions_est"))
+
     days = parse_target_days(state.get("target_date"))
-    if days is None:
-        return DEFAULT_HORIZON_DAYS
-    return max(MIN_HORIZON_DAYS, min(MAX_HORIZON_DAYS, days))
+    base = DEFAULT_WINDOW_LENGTH if days is None else min(DEFAULT_WINDOW_LENGTH, days)
+    return max(MIN_WINDOW_LENGTH, min(MAX_WINDOW_LENGTH, base))
 
 
-def _placeholder_day(day_no: int, daily_minutes) -> dict:
+def clamp_task_minutes(minutes, session_minutes, *, default: int = DEFAULT_TASK_MINUTES) -> int:
+    """把单任务时长**限制在单次可用时长之内**（代码强制，不靠模型自觉）。
+
+    模型可以想要 60 分钟的任务，但用户只有 15 分钟 —— 超出的部分由代码砍掉，
+    而不是让用户做不完。**这也是 I-10 的同类思路：约束由代码定，不由模型裁量。**
+    """
+    try:
+        cap = int(session_minutes) if session_minutes else default
+    except (TypeError, ValueError):
+        # 与 `plan_unit()` 相同的容错：state 里的 session_minutes 可能是脏值
+        # （手工改过的状态文件、"30分钟" 这类字符串），不能让它炸掉整条计划生成链路
+        cap = default
+    cap = max(MIN_TASK_MINUTES, cap)
+
+    try:
+        value = int(minutes) if minutes else cap
+    except (TypeError, ValueError):
+        value = cap
+    if value <= 0:
+        value = cap
+    return min(value, cap)
+
+
+def _placeholder_day(day_no: int, session_minutes) -> dict:
     """补齐窗口用的确定性占位日（模型给的天数不足时）。"""
-    minutes = int(daily_minutes) if daily_minutes else 30
+    minutes = clamp_task_minutes(None, session_minutes)
     return {
         "day": day_no,
         "theme": "复习与巩固",
@@ -87,10 +281,11 @@ def _placeholder_day(day_no: int, daily_minutes) -> dict:
     }
 
 
-def fallback_plan(horizon: int, goal: str = "", weak_points=None, daily_minutes=None) -> list[dict]:
+def fallback_plan(horizon: int, goal: str = "", weak_points=None,
+                  session_minutes=None) -> list[dict]:
     """模型不可用时的确定性兜底计划：优先围绕薄弱点安排。"""
     topics = [t for t in (weak_points or []) if t] or [f"{goal or '基础内容'}"]
-    minutes = int(daily_minutes) if daily_minutes else 30
+    minutes = clamp_task_minutes(None, session_minutes)
     days: list[dict] = []
     for index in range(horizon):
         topic = topics[index % len(topics)]
@@ -113,8 +308,8 @@ def fallback_plan(horizon: int, goal: str = "", weak_points=None, daily_minutes=
 
 
 def normalize_plan_data(data, horizon: int, goal: str = "",
-                        weak_points=None, daily_minutes=None) -> list[dict]:
-    """清洗 LLM 产出的计划：对齐天数、重编号、限制任务数、丢弃空任务。"""
+                        weak_points=None, session_minutes=None) -> list[dict]:
+    """清洗 LLM 产出的计划：对齐天数、重编号、限制任务数、丢弃空任务、**钳制任务时长**。"""
     raw_days = data.get("days") if isinstance(data, dict) else None
 
     days: list[dict] = []
@@ -130,7 +325,10 @@ def normalize_plan_data(data, horizon: int, goal: str = "",
             task = PlanTask.model_validate(raw_task)
             if not any([task.goal, task.material, task.exercise, task.done_criteria]):
                 continue                      # 全空任务丢弃
-            tasks.append(task.model_dump())
+            payload = task.model_dump()
+            # **任务粒度约束（代码强制）**：不得超过单次可用时长
+            payload["minutes"] = clamp_task_minutes(payload.get("minutes"), session_minutes)
+            tasks.append(payload)
             if len(tasks) >= MAX_TASKS_PER_DAY:
                 break
 
@@ -141,11 +339,11 @@ def normalize_plan_data(data, horizon: int, goal: str = "",
     # 模型没给出任何可用的一天（或有天数但全无任务）-> 整体兜底，优先围绕薄弱点
     if not days or not any(day["tasks"] for day in days):
         return fallback_plan(horizon, goal=goal, weak_points=weak_points,
-                             daily_minutes=daily_minutes)
+                             session_minutes=session_minutes)
 
     # 天数不足：用确定的占位日补齐（保证窗口天数真的排满）
     while len(days) < horizon:
-        days.append(_placeholder_day(len(days) + 1, daily_minutes))
+        days.append(_placeholder_day(len(days) + 1, session_minutes))
 
     for index, day in enumerate(days, start=1):
         day["day"] = index

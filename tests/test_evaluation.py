@@ -38,8 +38,10 @@ from coach.services.evaluation import apply_update, evaluate
 
 
 def _plan() -> dict:
+    """执行窗口用**当前结构**（`length`；`horizon_days` 是 v0.14 之前的旧名）。"""
     return {
-        "horizon_days": 2,
+        "length": 2,
+        "unit": "session",
         "start_date": "2026-01-01",
         "days": [
             {"day": 1, "theme": "读取数据", "tasks": [
@@ -61,7 +63,7 @@ def _evaluation_state(**extra) -> dict:
     state.update({
         "learning_goal": "Python 数据分析",
         "current_stage": STAGE_EVALUATION,
-        "current_plan": _plan(),
+        "current_window": _plan(),
         "plan_confirmed": True,
         "plan_progress": {"day": 1, "task": 1, "completed": [], "finished": False},
         "today_task": {
@@ -196,12 +198,12 @@ def test_guard_chain_evaluation_to_learning():
     state["latest_result"] = _latest("completed", "pass")
     assert try_advance(state) == STAGE_PROFILE_UPDATE
 
-    # 未应用 -> 不能回到每日任务
+    # 未应用 -> 不能回到学习任务
     assert state["latest_result_applied"] is False
     assert try_advance(state) is None
     assert state["current_stage"] == STAGE_PROFILE_UPDATE
 
-    # 应用后 -> 回到每日任务
+    # 应用后 -> 回到学习任务
     apply_update(state)
     assert try_advance(state) == STAGE_LEARNING
 

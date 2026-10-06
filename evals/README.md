@@ -1,13 +1,16 @@
 # evals —— 评测集与判分一致率（M-01）
 
 > 对应 PRD `docs/PRD.md`：§3.3.1 评测数据与防泄漏、§3.3.2 指标字典（M-01）、§3.3.4 发布门槛、§9 质量要求。
-> 本目录支撑方案要素 **S-07** 中"评测集"部分；**指标采集与导出**（`tokens/cost/latency` 等事件级采集）是 S-07 的另一半，尚未实现。
+> 本目录是 **S-07** 的"评测集"部分；S-07 的另一半 —— **事件级指标采集与导出**
+> （`tokens / cost / latency / 每轮调用次数`）—— 已在 `coach/metrics/`（`recorder` / `summary` / `export`）
+> 实现，并由 `tests/test_metrics.py`（18 条确定性用例）覆盖，用法见 `python -m coach.metrics.export`。
 
 ## 这是什么
 
 一套**只评 LLM 非确定性判定**的评测集与 runner。
 
-确定性逻辑（状态机守卫、计划清洗、分数聚合、薄弱点阈值、游标推进…）已由 `tests/` 的 **73 个用例**覆盖，属于 PRD 的**固定回归集**，本评测集**不重复**。
+确定性逻辑（状态机守卫、计划清洗、分数聚合、薄弱点阈值、游标推进…）已由 `tests/` 的 **168 个用例**
+（161 确定性 + 7 条 live；无 Key 时 live 记 SKIP 且不计入通过数）覆盖，属于 PRD 的**固定回归集**，本评测集**不重复**。
 
 | judge | 被测函数 | 期望字段 |
 |---|---|---|
@@ -26,6 +29,9 @@ evals/
 ├── dataset/
 │   ├── dev.jsonl          # 开发评测集（30 条）——调提示词时只看这个
 │   └── holdout.jsonl      # 独立验收集（8 条）——只用于发布判断
+├── dataset_overview.md    # 自动生成：dev 的可读总览（勿手工编辑）
+├── holdout_overview.md    # 自动生成：holdout 的可读总览（勿手工编辑）
+├── results/               # 自动生成：--live 的结果导出（CSV / JSONL）
 └── run_eval.py            # runner
 ```
 
@@ -59,11 +65,12 @@ $env:DEEPSEEK_API_KEY = "sk-..."
 
 | 想看什么 | 用什么 |
 |---|---|
-| **逐条看内容**（输入 / 期望 / 判定依据） | `--show`（可配 `--filter`） |
-| **在编辑器里通读并评审标签** | `--export-md evals\dataset_overview.md` |
+| **逐条看内容**（输入 / 期望 / 判定依据 / 备注） | `--show`（可配 `--filter`） |
+| **在编辑器里通读并评审标签** | `--export-md evals\dataset_overview.md`（holdout 用 `evals\holdout_overview.md`） |
 | **只看覆盖度**（分布统计，不列内容） | 直接跑（默认 dry-run） |
 
-> `dataset_overview.md` 是**自动生成**的派生物，请勿手工编辑——改标签请改 `dataset/*.jsonl` 后重新导出。
+> `dataset_overview.md` / `holdout_overview.md` 是**自动生成**的派生物，请勿手工编辑——
+> 改标签请改 `dataset/*.jsonl` 后重新导出（`--export-md`）。
 
 ## 输出怎么读
 
@@ -101,11 +108,11 @@ $env:DEEPSEEK_API_KEY = "sk-..."
 1. **心理学领域代码尚未实现**（S-02/S-05 = ⬜待实现）：心理学用例现在只能验证判定提示词在该内容上的表现。
 2. **`profile_extract` 的调用失败不可区分**（失败时返回空画像，与"确实没提供信息"在返回值上一致）。
 3. **单次运行有波动**：即使 `temperature=0` 也可能变化，发布判断建议 `--repeat 3`。
-4. **样本量小**：30 条仅够发现明显问题，**不足以支撑统计显著性结论**。
+4. **样本量小**：dev 30 条 / holdout 8 条，仅够发现明显问题，**不足以支撑统计显著性结论**。
 5. **标注由 AI 起草、人工复核**：`rubric` 字段写明每条期望的依据，复核时直接对照生产提示词修改。
+6. **争议用例不自动剔除**：runner 一律计入分子/分母，争议条须在复核阶段改标签或移出数据集（详见 `schema.md` §6.5）。
 
 ## 待办
 
 - [ ] 人工复核 30 条 dev + 8 条 holdout 的 `expected` 与 `rubric`（当前为 AI 起草）。
-- [ ] 补充 S-07 的**事件级指标采集**（tokens / cost / latency / verdict）与 `python -m metrics.export`。
 - [ ] 跑出第一份 M-01 基线，据此确定阈值（O-02）。
