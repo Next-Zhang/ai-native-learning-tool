@@ -19,6 +19,7 @@ from datetime import datetime
 from pathlib import Path
 
 from coach.config import BACKUP_DIR, DATA_DIR
+from coach.domain.memory import archive_message_count
 from coach.domain.stages import ALL_STAGES
 from coach.domain.state_schema import DEFAULT_STATE
 from coach.storage.state_store import STATE_FILE
@@ -78,8 +79,9 @@ def clear_history(state: dict) -> int:
     归档里仍留着旧对话，用户在"删除我的数据"这件事上会被误导。
     """
     history = state.get("conversation_history") or []
-    archive = state.get("conversation_archive") or []
-    count = len(history) + len(archive)
+    # v0.18：归档改成**按单次学习分段**，所以条数要由 memory 统一计数
+    # （它同时兼容 v0.17 的扁平结构，旧状态文件不会算错）。
+    count = len(history) + archive_message_count(state)
     state["conversation_history"] = []
     state["conversation_archive"] = []
     return count

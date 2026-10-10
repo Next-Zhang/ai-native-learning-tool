@@ -36,6 +36,7 @@ DEFAULT_STATE = {
         "completed": [],
         "finished": False,
         "attempts": 0,             # v0.14：验收判定次数（**含重做**）—— "滚动=重估"的速度信号
+        "session_day": 0,          # v0.18：已开过学习的那一天（0=还没开过）；跨天即跨次学习
     },
     "today_task": None,
 
@@ -50,6 +51,25 @@ DEFAULT_STATE = {
     # v0.16（S-09）：移出对话窗口的明细进这里 —— **不丢信息，但不注入模型**。
     # 目的：压制"每轮注入全量 history"带来的成本与暴露面（PRD X-09 / X-11）。
     "conversation_archive": [],
+
+    # v0.18：长期记忆的**事实层**（见 docs/memory-design.md §5 / I-12）
+    #   session_seq      **单调递增**的单次学习序号
+    #                    （`plan_progress.day` 每个计划块会重置，不能当序号用）
+    #   evidence         知识点 -> [{at, session_seq, source, verdict, score,
+    #                                error_type, task_id}]（每个知识点保留最近 K 条）
+    #   session_records  每次单次学习的记录（L2 定稿摘要的落点）
+    "session_seq": 0,
+    "evidence": {},
+    "session_records": [],
+
+    # v0.18：记忆的**叙事层**（有损、可压缩；见 docs/memory-design.md §6）
+    #   rolling_summary   本次单次学习内的滚动摘要（**单槽：替换而不是追加**）
+    #   session_summaries 每次单次学习定稿一条（上界由 memory 裁剪）
+    "rolling_summary": None,
+    "session_summaries": [],
+    # 已定稿摘要到第几次学习（幂等标记）。**放在顶层而不是 plan_progress** ——
+    # 窗口滚动会整体重置游标（`fresh_progress()`），放里面会被清零并导致重复压缩。
+    "condensed_through_seq": 0,
 }
 
 #: 旧字段 → 新字段。
@@ -123,6 +143,53 @@ def upgrade_plan_progress(state) -> list[str]:
     return ["plan_progress.attempts"]
 
 
+def upgrade_evidence_shape(state) -> list[str]:
+    """把旧状态的 `skill_profile` **补种**成一条条 evidence（v0.18）。
+
+    只在"**有画像、却没有任何证据**"时补种 —— 否则会重复补种、或覆盖真实证据。
+
+    补种的来源如实标记为 `migrated_v0.17`：**不伪装成测评或验收**。
+    I-12 要求来源可信；"编一个来源"比标注"这是迁移来的"更糟。
+
+    不补种的后果很严重：画像改为由证据派生后，旧用户的 `skill_profile`
+    会因为"没有证据"而**在第一次运行时就变空** —— 等于抹掉他全部的掌握度。
+    """
+    profile = state.get("skill_profile")
+    if not isinstance(profile, dict) or not profile:
+        return []
+    evidence = state.get("evidence")
+    if isinstance(evidence, dict) and evidence:
+        return []
+
+    # 局部导入：避免 domain 内部循环导入（memory 依赖 assessment_rules）。
+    from coach.domain.memory import SOURCE_MIGRATED, record_evidence
+
+    seeded = 0
+    for topic, score in profile.items():
+        if record_evidence(state, topic, source=SOURCE_MIGRATED,
+                           verdict="migrated", score=score):
+            seeded += 1
+    return [f"evidence(seeded {seeded})"] if seeded else []
+
+
+def upgrade_archive_shape(state) -> list[str]:
+    """把**扁平**的 `conversation_archive`（v0.17：一个消息列表）升级为**分段**结构（v0.18）。
+
+    为什么要分段：归档要按"**保留最近 N 次单次学习**"裁剪
+    （见 docs/memory-design.md §8.2），而扁平列表无法知道哪条消息属于哪一次学习。
+
+    旧数据统一并入一个 `session_seq=0` 的分段 —— **不删、不猜**（猜错比不猜更糟）。
+    """
+    archive = state.get("conversation_archive")
+    if not isinstance(archive, list) or not archive:
+        return []
+    if all(isinstance(seg, dict) and "messages" in seg for seg in archive):
+        return []                          # 已经是分段结构
+    messages = [m for m in archive if isinstance(m, dict)]
+    state["conversation_archive"] = [{"session_seq": 0, "messages": messages}]
+    return ["conversation_archive(segmented)"]
+
+
 def ensure_keys(state, defaults=None) -> list[str]:
     """升级 state：迁移旧字段 → 升级嵌套结构 → 补齐缺失顶层键；返回**全部变更**。
 
@@ -137,6 +204,7 @@ def ensure_keys(state, defaults=None) -> list[str]:
     changed.extend(migrate_legacy_fields(state))
     changed.extend(upgrade_window_shape(state))
     changed.extend(upgrade_plan_progress(state))
+    changed.extend(upgrade_archive_shape(state))
 
     if defaults is None:
         defaults = DEFAULT_STATE
@@ -145,4 +213,7 @@ def ensure_keys(state, defaults=None) -> list[str]:
             # 可变默认值要深拷贝，避免多个 state 共享同一个 list/dict
             state[key] = json.loads(json.dumps(value))
             changed.append(key)
+
+    # v0.18：**补种必须在补默认键之后** —— 它要能看到补出来的空 evidence。
+    changed.extend(upgrade_evidence_shape(state))
     return changed

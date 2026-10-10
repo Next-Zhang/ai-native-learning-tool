@@ -10,6 +10,12 @@ RAG 采用**惰性导入**：RAG 本期不在范围，缺失时不应影响主�
 `cli.main` 与 `orchestration.turn` 都没有 try/except，抛出去就是整个会话崩掉。
 """
 
+from coach.domain.memory import (
+    INJECT_CHAR_BUDGET,
+    INJECT_SESSION_SUMMARIES,
+    select_history,
+    session_summaries,
+)
 from coach.domain.profile import render_profile
 from coach.domain.profile_rules import PROFILE_FIELDS
 from coach.domain.stages import (
@@ -21,7 +27,12 @@ from coach.domain.stages import (
 )
 from coach.llm import client
 from coach.prompts.stages import stage_prompt
-from coach.prompts.tasks import KNOWN_INFO_PROMPT, RAG_SYSTEM_PROMPT
+from coach.prompts.tasks import (
+    KNOWN_INFO_PROMPT,
+    PROGRESS_MEMORY_PROMPT,
+    RAG_SYSTEM_PROMPT,
+    SESSION_HISTORY_PROMPT,
+)
 from coach.services.assessment import describe_progress
 from coach.services.daily_task import describe_today_task
 from coach.services.evaluation import describe_result
@@ -177,9 +188,36 @@ def chat_with_coach(
             }
         )
 
-    messages.extend(history)
-
+    # 3) 先算出「权威状态」文本 —— 它**参与**下面的注入预算计算
     known = describe_known_profile(state, stage=effective_stage)
+
+    # 3b) 记忆的**叙事层**（docs/memory-design.md §6.1 的 ② 与 ④）：
+    #     本次学习的进行中摘要 + 此前各次学习的定稿摘要。
+    #     它们必须排在对话原文之前，但**权威状态仍在最后**（I-3 不变）。
+    rolling = (state or {}).get("rolling_summary")
+    if rolling:
+        messages.append({
+            "role": "system",
+            "content": PROGRESS_MEMORY_PROMPT + "\n\n【本次学习进展】\n" + str(rolling),
+        })
+
+    recent = session_summaries(state)[-INJECT_SESSION_SUMMARIES:] if state else []
+    if recent:
+        block = "\n".join(
+            f"- 第 {item.get('seq')} 次学习：{item.get('text', '')}" for item in recent
+        )
+        messages.append({
+            "role": "system",
+            "content": SESSION_HISTORY_PROMPT + "\n\n【此前学习摘要】\n" + block,
+        })
+
+    # 4) 历史按**字符预算**截取，而不是固定条数（docs/memory-design.md §6.1）。
+    #    固定条数无法适配不同长度的对话：一次 2 小时的学习里，8 条只覆盖最近十几分钟；
+    #    固定放大又会在短对话里白白拉长提示词。
+    fixed = sum(len(str(m.get("content") or "")) for m in messages)
+    fixed += len(user_input) + len(known or "")
+    messages.extend(select_history(history, budget=max(0, INJECT_CHAR_BUDGET - fixed)))
+
     if known:
         messages.append(
             {

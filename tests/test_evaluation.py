@@ -32,7 +32,7 @@ from coach.domain.stages import (
     STAGE_LEARNING,
     try_advance,
 )
-from coach.domain.state_schema import DEFAULT_STATE
+from coach.domain.state_schema import DEFAULT_STATE, ensure_keys
 from coach.services.evaluation import apply_update, evaluate
 
 
@@ -140,7 +140,12 @@ def test_error_types_normalization():
 
 def test_apply_update_pass_advances_cursor():
     state = _evaluation_state(latest_result=_latest("completed", "pass"))
+    # v0.18：画像**由证据派生**，所以"已有知识点"必须作为证据存在。
+    # 直接写 `skill_profile` 是改造前的写法，现在会被派生覆盖 ——
+    # 走一次 `ensure_keys`（与 `load_state` 同路径）才是真实场景：
+    # 旧用户的画像就是这样被补种成证据的。
     state["skill_profile"] = {"读取数据": 0.5}
+    ensure_keys(state)
 
     summary = apply_update(state)
 

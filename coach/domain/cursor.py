@@ -2,17 +2,22 @@
 
 游标模型：
     plan_progress = {"day": 1, "task": 1, "completed": ["1-1"],
-                     "finished": false, "attempts": 0}
+                     "finished": false, "attempts": 0, "session_day": 1}
     - 当天还有任务 -> task + 1
     - 当天任务都完成 -> 下一天 task = 1
     - 全部完成 -> finished = true
     - `attempts`：验收判定次数（**含重做**），是"滚动=重估"的唯一速度信号
       （`completed` 按 key 去重，看不出重做）
+    - `session_day`（v0.18）：**已经开过学习**的那一天。计划里的"一天"就是
+      **一次单次学习**（一次坐下来学的量），所以跨天 = 跨次学习 —— 跨次时把
+      `state["session_seq"]` 前进一位（见 docs/memory-design.md §5.4）。
+      0 表示"还没开过任何一次学习"。
 
 纯逻辑：不调 LLM、不落盘；`build_today_task` / `mark_task_done` 只写传入的 state dict。
 """
 
-DEFAULT_PROGRESS = {"day": 1, "task": 1, "completed": [], "finished": False, "attempts": 0}
+DEFAULT_PROGRESS = {"day": 1, "task": 1, "completed": [], "finished": False,
+                    "attempts": 0, "session_day": 0}
 
 
 def fresh_progress() -> dict:
@@ -55,7 +60,31 @@ def get_progress(state) -> dict:
         progress["attempts"] = max(0, int(progress.get("attempts") or 0))
     except (TypeError, ValueError):
         progress["attempts"] = 0
+
+    try:
+        progress["session_day"] = max(0, int(progress.get("session_day") or 0))
+    except (TypeError, ValueError):
+        progress["session_day"] = 0
     return progress
+
+
+def _open_session(state, progress, day) -> None:
+    """跨到新的一次学习时，把 `state["session_seq"]` 前进一位（本模块唯一的副作用）。
+
+    单次学习的边界 = 计划里的 `day` 边界：计划里的一天就是"**一次坐下来学**"的量
+    （见 docs/memory-design.md §0 的术语表）。同一天重复调用是**幂等**的。
+    """
+    try:
+        day = int(day)
+    except (TypeError, ValueError):
+        return
+    if progress.get("session_day") == day:
+        return
+    # 局部导入：`memory` 依赖 assessment_rules，放在模块级会让 domain 内部成环。
+    from coach.domain.memory import new_session
+
+    new_session(state)
+    progress["session_day"] = day
 
 
 def lookup_task(plan, day: int, task: int) -> dict | None:
@@ -159,6 +188,7 @@ def build_today_task(state) -> dict | None:
     task = lookup_task(plan, *position)
     progress["day"], progress["task"] = position
     progress["finished"] = False
+    _open_session(state, progress, position[0])      # v0.18：新的一天 = 新的一次学习
     state["plan_progress"] = progress
     state["today_task"] = task
     return task
@@ -182,6 +212,7 @@ def mark_task_done(state) -> dict:
     progress["finished"] = nxt is None
     if nxt is not None:
         progress["day"], progress["task"] = nxt
+        _open_session(state, progress, nxt[0])       # v0.18：跨天即跨次学习
 
     state["plan_progress"] = progress
     state["today_task"] = None

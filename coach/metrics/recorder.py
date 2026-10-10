@@ -52,6 +52,8 @@ SCHEMA_FIELDS = ("ts", "session_id", "stage", "event", *EXTRA_FIELDS, "model",
 EVENT_LLM_CALL = "llm_call"
 EVENT_TURN = "turn"
 EVENT_CONFIRMATION = "confirmation"
+#: v0.18：归档裁剪**必须留痕**（I-13）—— 静默丢弃是"窗口化退化成截断"的根源。
+EVENT_ARCHIVE_PRUNED = "archive_pruned"
 
 # 当前阶段（由 orchestration 设置，供 llm_call 事件归属阶段）
 _stage_var: ContextVar[str | None] = ContextVar("coach_metrics_stage", default=None)

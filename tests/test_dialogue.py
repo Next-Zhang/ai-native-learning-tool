@@ -445,23 +445,32 @@ def test_render_profile_covers_all_dimensions():
     assert "仅参考" in text
 
 
-def test_conversation_window_trims_and_archives():
-    """**S-09**：超出窗口的对话进归档（**不丢**），注入的只有最近 N 条。"""
-    from coach.orchestration.executor import CONVERSATION_WINDOW, trim_history
+def test_conversation_log_trims_into_segmented_archive():
+    """**S-09 / M6**：超出**日志上限**的对话进归档（按单次学习分段）；注入另按字符预算取。
 
-    n = CONVERSATION_WINDOW + 4
-    state = {"conversation_history": [{"role": "user", "content": f"m{i}"} for i in range(n)]}
-    trim_history(state)
+    v0.18 把"注入窗口 8 条"改成了"日志上限 + 注入字符预算"：
+    8 条 = 4 轮 ≈ 最近十几分钟，对一次 2 小时的学习太小（docs/memory-design.md §6.1）。
+    """
+    from coach.domain.memory import HISTORY_MAX_MESSAGES, archive_segments
+    from coach.orchestration.executor import trim_history
 
-    assert len(state["conversation_history"]) == CONVERSATION_WINDOW
-    assert len(state["conversation_archive"]) == 4
-    # 归档保存**最早**的，窗口保留**最新**的
-    assert state["conversation_archive"][0]["content"] == "m0"
+    n = HISTORY_MAX_MESSAGES + 4
+    state = {"session_seq": 1,
+             "conversation_history": [{"role": "user", "content": f"m{i}"} for i in range(n)]}
+    assert trim_history(state) == 0            # 未触及归档上限 -> 丢弃 0 条
+
+    assert len(state["conversation_history"]) == HISTORY_MAX_MESSAGES
+    segments = archive_segments(state)
+    assert len(segments) == 1                  # 同一次学习 -> 同一分段
+    assert segments[0]["session_seq"] == 1
+    # 归档保存**最早**的，日志保留**最新**的
+    assert len(segments[0]["messages"]) == 4
+    assert segments[0]["messages"][0]["content"] == "m0"
     assert state["conversation_history"][-1]["content"] == f"m{n - 1}"
 
-    # 窗口没满时不做任何事（不产生空的归档字段）
+    # 没超上限时什么都不做（不产生空的归档字段）
     short = {"conversation_history": [{"role": "user", "content": "x"}]}
-    trim_history(short)
+    assert trim_history(short) == 0
     assert "conversation_archive" not in short
 
 

@@ -15,6 +15,7 @@
 |---|---|
 | **产品需求 / 用户 / 指标 / 验收**（唯一事实来源） | [docs/PRD.md](docs/PRD.md)（当前 **v0.17**） |
 | **架构决策 / 11 条不变量 / 框架完成度**（改代码前必读） | [docs/architecture.md](docs/architecture.md)（含**附录 A：框架缺口清单**） |
+| **记忆管理设计**（短期/长期、压缩、证据链、待复验、存储与保留） | [docs/memory-design.md](docs/memory-design.md)（**v0.18 设计，尚未实现**） |
 | 测试质量与覆盖结构（按断言对象分层） | [docs/test-audit.md](docs/test-audit.md) |
 | 运行方式、测试约定、**怎么加一个新能力** | 本文件下方 |
 

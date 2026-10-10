@@ -61,6 +61,9 @@ EXPECTED_EXISTING = frozenset({
     "planning.window_finish_check",
     "planning.window_roll",
     "memory.commit_history",
+    # v0.18：记忆的叙事层两级压缩（见 docs/memory-design.md §6）
+    "memory.condense_progress",
+    "memory.condense_cycle",
 })
 
 
@@ -108,7 +111,9 @@ def test_capabilities_for_filters_by_slot():
     assert [c.name for c in intake] == ["perception.profile_extract"]
 
     closing = capabilities_for("learning", slot=SLOT_CLOSING)
+    # 顺序 = `order` 升序：L1(110) → L2(115) → 窗口检查(120) → 滚动(125) → 落盘(130)
     assert [c.name for c in closing] == [
+        "memory.condense_progress", "memory.condense_cycle",
         "planning.window_finish_check", "planning.window_roll", "memory.commit_history",
     ]
 

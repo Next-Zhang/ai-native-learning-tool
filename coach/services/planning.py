@@ -16,6 +16,7 @@
 from datetime import date
 
 from coach.domain.cursor import fresh_progress, is_plan_finished
+from coach.domain.memory import REVIEW_UNCOVERED_SESSIONS, derive_due_for_review
 from coach.domain.models import ConfirmationVerdict
 from coach.domain.profile import render_profile
 from coach.domain.plan_rules import (
@@ -70,6 +71,22 @@ def unit_label(state) -> str:
     return "次" if plan_unit(state) == UNIT_SESSION else "天"
 
 
+def review_hint(state) -> str:
+    """待复验知识点 → 提示词片段（没有待复验项时返回**空串**）。
+
+    见 docs/memory-design.md §7：**标记待复验**是复习调度的最小内核 ——
+    它不是独立阶段，而是"生成下一个计划块时优先安排"的一条排序规则。
+    没有待复验项时返回空串，因此这个功能在**触发前对行为完全无影响**。
+    """
+    due = derive_due_for_review(state)
+    if not due:
+        return ""
+    return (
+        f"**待复验的知识点**（已连续 {REVIEW_UNCOVERED_SESSIONS} 次学习未覆盖，"
+        f"请优先安排任务覆盖）：{'、'.join(due)}\n"
+    )
+
+
 # ---------------------------------------------------------------------------
 # 1) 路线图（长期）
 # ---------------------------------------------------------------------------
@@ -113,6 +130,7 @@ def generate_plan(state) -> list[dict]:
     user_content = (
         f"【学习者画像】\n{render_profile(state)}\n\n"
         f"**单次可投入 {minutes} 分钟是硬上限**：每个任务的 minutes 不得超过它。\n"
+        f"{review_hint(state)}"
         f"**当前里程碑**：{milestone.get('title', '')}"
         f"（知识点：{'、'.join(milestone.get('topics') or []) or '未指定'}）\n"
         f"请只规划连续 {length} {unit}。"

@@ -40,10 +40,13 @@ from coach.domain.capabilities import (
     Capability,
     select_capabilities,
 )
+from coach.domain import memory
 from coach.domain.cursor import build_today_task, is_plan_finished
 from coach.domain.profile_rules import merge_profile, profile_complete
 from coach.domain.stages import try_advance
+from coach.metrics import recorder as metrics
 from coach.services import assessment, daily_task, evaluation, planning, profile
+from coach.services.memory import summarize_cycle, summarize_progress
 from coach.services.coach import chat_with_coach
 from coach.storage.state_store import save_state
 
@@ -199,6 +202,10 @@ PRECONDITIONS: dict[str, Callable[[TurnContext], bool]] = {
     ),
     # ⑩b 滚动：只有窗口**真的走完**才滚动（roll_window 内部还会再确认一次）
     "planning.window_roll": lambda ctx: is_plan_finished(ctx.state),
+    # ⑩c L1 滚动摘要（v0.18）：只有"装不下"的原文攒够门槛时才值得花一次模型调用
+    "memory.condense_progress": lambda ctx: bool(_droppable_messages(ctx.state)),
+    # ⑩d L2 定稿摘要（v0.18）：刚跨过一次单次学习边界、且那一次还没定稿
+    "memory.condense_cycle": lambda ctx: memory.pending_cycle_seq(ctx.state) is not None,
     # ⑪ 落盘：总是执行
     "memory.commit_history": lambda ctx: True,
 }
@@ -283,39 +290,102 @@ def _h_window_finish_check(ctx: TurnContext) -> None:
     ctx.result.plan_finished = is_plan_finished(ctx.state)
 
 
-#: 注入模型的对话窗口大小（S-09）；超出部分进 `conversation_archive`。
-CONVERSATION_WINDOW = 8
-
-#: 归档上限（只控制文件增长；用户可用 `/reset` 清空）
-CONVERSATION_ARCHIVE_LIMIT = 500
+#: 原始对话日志的条数上限（**它不是注入量**）—— 约两次单次学习的量。
+#: 注入量另由 `memory.select_history` 按**字符预算**决定（docs/memory-design.md §6.1）。
+HISTORY_MAX_MESSAGES = memory.HISTORY_MAX_MESSAGES
 
 
-def trim_history(state) -> None:
-    """把超出窗口的对话移进归档 —— **不丢信息，只控制注入量**（S-09）。
+def trim_history(state) -> int:
+    """把超出**日志上限**的对话移进**按单次学习分段**的归档；返回**被丢弃的消息条数**。
 
-    这是 v0.16 里"记忆"唯一真实的改动：以前每轮都把**全量** history 发给模型，
-    成本与暴露面随轮数线性增长（PRD X-09 / X-11）。
-    不做"阶段小结"（那要多一次模型调用），也不拆存储文件（数据量未到瓶颈）。
+    v0.18 改了三处（见 docs/memory-design.md §8.2 / I-13）：
+
+    1. 上限从"注入窗口 8 条"改成"日志上限"。**注入量不再由它决定** ——
+       8 条 = 4 轮 ≈ 最近十几分钟，对一次 2 小时的学习太小了。
+    2. 归档按**单次学习分段**，于是"保留最近 N 次学习的原文"才可实现。
+    3. 丢弃**必须留痕**：返回值就是被丢掉的消息条数，调用方负责记指标事件。
+       改造前是 `del archive[:-500]` —— 静默丢弃，用户永远不知道少了什么。
     """
     history = state.get("conversation_history") or []
-    if len(history) <= CONVERSATION_WINDOW:
-        return
-    overflow = history[:-CONVERSATION_WINDOW]
-    state["conversation_history"] = history[-CONVERSATION_WINDOW:]
+    if len(history) <= HISTORY_MAX_MESSAGES:
+        return 0
+    overflow = history[:-HISTORY_MAX_MESSAGES]
+    state["conversation_history"] = history[-HISTORY_MAX_MESSAGES:]
 
-    archive = state.get("conversation_archive")
-    if not isinstance(archive, list):
-        archive = []
-        state["conversation_archive"] = archive
-    archive.extend(overflow)
-    if len(archive) > CONVERSATION_ARCHIVE_LIMIT:
-        del archive[:-CONVERSATION_ARCHIVE_LIMIT]
+    memory.append_to_archive(state, overflow)
+    return memory.prune_archive(state)
+
+
+def _droppable_messages(state) -> list:
+    """筛出"该折进滚动摘要"的较早原文（L1 的触发判据）。
+
+    用**回压比例**而不是满预算：满预算意味着"压完之后立刻又满了"，
+    于是每轮都要多一次模型调用 —— 那是成本灾难（PRD §8 护栏）。
+    另外要求至少攒够 `L1_MIN_DROPPED` 条，避免为两三条消息白调一次。
+    """
+    history = state.get("conversation_history") or []
+    budget = int(memory.INJECT_CHAR_BUDGET * memory.L1_TARGET_RATIO)
+    kept = memory.select_history(history, budget=budget,
+                                 min_messages=memory.MIN_RAW_MESSAGES)
+    cut = max(0, len(history) - len(kept))
+    if cut < memory.L1_MIN_DROPPED:
+        return []
+    return history[:cut]
+
+
+def _h_condense_progress(ctx: TurnContext) -> None:
+    """**L1 滚动摘要**：较早的原文 → 折进 `rolling_summary`，原文进归档。
+
+    只从**注入**里移出，原文仍留在归档（不删数据）；摘要**替换**而不是追加，
+    否则摘要自己也会线性增长（见 docs/memory-design.md §6.2）。
+    """
+    dropped = _droppable_messages(ctx.state)
+    if not dropped:
+        return
+    previous = ctx.state.get("rolling_summary") or ""
+    ctx.state["rolling_summary"] = summarize_progress(ctx.state, dropped, previous)
+
+    history = ctx.state.get("conversation_history") or []
+    ctx.state["conversation_history"] = history[len(dropped):]
+    memory.append_to_archive(ctx.state, dropped)
+
+
+def _h_condense_cycle(ctx: TurnContext) -> None:
+    """**L2 定稿摘要**：每次单次学习结束压一条，并留下结构化记录。
+
+    幂等靠**顶层** `state["condensed_through_seq"]`（不放在游标里 —— 窗口滚动会重置游标）；
+    定稿后滚动摘要清空，
+    且定稿摘要**只追加、永不参与 L1 压缩**（避免层层失真，§6.2）。
+    """
+    seq = memory.pending_cycle_seq(ctx.state)
+    if seq is None:
+        return
+
+    skeleton = memory.current_cycle_skeleton(ctx.state, seq)
+    text = summarize_cycle(ctx.state, seq, skeleton)
+    memory.record_cycle_summary(ctx.state, seq, text, skeleton.get("topics"))
+    memory.upsert_session_record(
+        ctx.state, seq,
+        tasks_done=skeleton.get("tasks"),
+        topics=skeleton.get("topics"),
+        errors=skeleton.get("errors"),
+        attempts=skeleton.get("attempts"),
+        summary=text,
+    )
+    memory.mark_cycle_condensed(ctx.state, seq)
+    ctx.state["rolling_summary"] = None          # 已定稿，滚动摘要清空
 
 
 def _h_commit_history(ctx: TurnContext) -> None:
     ctx.state["conversation_history"].append({"role": "user", "content": ctx.user_input})
     ctx.state["conversation_history"].append({"role": "assistant", "content": ctx.answer})
-    trim_history(ctx.state)
+
+    dropped = trim_history(ctx.state)
+    if dropped:
+        # **I-13：归档不是黑洞** —— 丢掉多少必须留痕，否则"窗口化"就是静默的截断。
+        metrics.record(metrics.EVENT_ARCHIVE_PRUNED,
+                       label=f"dropped={dropped}", result="pruned")
+
     save_state(ctx.state)
 
 
@@ -333,6 +403,8 @@ HANDLERS: dict[str, Callable[[TurnContext], None]] = {
     "memory.profile_apply": _h_profile_apply,
     "planning.window_finish_check": _h_window_finish_check,
     "planning.window_roll": _h_window_roll,
+    "memory.condense_progress": _h_condense_progress,
+    "memory.condense_cycle": _h_condense_cycle,
     "memory.commit_history": _h_commit_history,
 }
 

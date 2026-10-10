@@ -106,16 +106,28 @@ def is_finished(state) -> bool:
 
 
 def finalize(state) -> dict:
-    """聚合产出 skill_profile 与 weak_points（纯代码计算，不再调 LLM）。"""
+    """聚合产出 skill_profile 与 weak_points（纯代码计算，不再调 LLM）。
+
+    v0.18：先把本次测评的分数写成 **evidence**（带来源与序号），再由证据**派生**画像。
+    长期记忆只有 evidence 是直接写的（见 @@docs/memory-design.md@@ §5 / I-12）。
+    """
+    # 局部导入：`memory` 依赖本模块的阈值与薄弱点规则，模块级导入会成环。
+    from coach.domain.memory import SOURCE_ASSESSMENT, derive_profile, record_evidence
+
     progress = state.get("assessment_progress") or {}
     records = progress.get("records") or []
 
     scores = aggregate_scores(records)
-    weak_points = derive_weak_points(scores)
+    for topic, score in scores.items():
+        record_evidence(state, topic, source=SOURCE_ASSESSMENT,
+                        verdict="assessment", score=score)
 
-    state["skill_profile"] = scores
+    profile = derive_profile(state)
+    weak_points = derive_weak_points(profile)
+
+    state["skill_profile"] = profile
     state["weak_points"] = weak_points
     progress["finished"] = True
     state["assessment_progress"] = progress
 
-    return {"skill_profile": scores, "weak_points": weak_points}
+    return {"skill_profile": profile, "weak_points": weak_points}

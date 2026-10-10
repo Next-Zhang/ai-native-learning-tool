@@ -84,10 +84,13 @@ def _learning_state(plan=None, **extra) -> dict:
 # ---------------------------------------------------------------------------
 
 def test_get_progress_defaults_and_merge():
-    # 形状是**规格**：v0.14 给 plan_progress 加了 `attempts`（验收尝试次数，含重做），
-    # 这里写全字段 —— 以后再加字段就该在本用例上显式失败一次，逼人确认兼容性。
+    # 形状是**规格**：v0.14 给 plan_progress 加了 `attempts`（验收尝试次数，含重做）；
+    # v0.18 又加了 `session_day`（已开过学习的那一天，0 = 还没开过）——
+    # 它让"跨天 = 跨一次学习"可判定，从而驱动 `state["session_seq"]`
+    # （见 docs/memory-design.md §5.4）。本用例**就该在加字段时失败一次**，逼人确认兼容性。
     assert get_progress({}) == {
-        "day": 1, "task": 1, "completed": [], "finished": False, "attempts": 0,
+        "day": 1, "task": 1, "completed": [], "finished": False,
+        "attempts": 0, "session_day": 0,
     }
 
     # 部分字段 -> 用默认值补齐

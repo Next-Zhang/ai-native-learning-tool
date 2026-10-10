@@ -245,6 +245,24 @@ REGISTRY: tuple[Capability, ...] = (
         ),
     ),
     Capability(
+        name="memory.condense_progress",
+        kind="memory", slot=SLOT_CLOSING, stages=("learning",),
+        reads=("conversation_history", "evidence", "session_seq", "plan_progress"),
+        writes=("rolling_summary", "conversation_history", "conversation_archive"),
+        calls_llm=True, autonomy=Autonomy.WRITE.value, order=110,
+        description=("[v0.18] L1 滚动摘要：注入将超预算时，把最老的原文折进"
+                     "本次学习的滚动摘要（模型失败退化为确定性摘要）"),
+    ),
+    Capability(
+        name="memory.condense_cycle",
+        kind="memory", slot=SLOT_CLOSING, stages=("learning",),
+        reads=("plan_progress", "evidence", "session_seq"),
+        writes=("session_summaries", "session_records", "condensed_through_seq"),
+        calls_llm=True, autonomy=Autonomy.WRITE.value, order=115,
+        description=("[v0.18] L2 定稿摘要：每次单次学习结束压一条"
+                     "（确定性骨架 + 模型润色；模型失败只留骨架）"),
+    ),
+    Capability(
         name="memory.commit_history",
         kind="memory", slot=SLOT_CLOSING, stages=(ANY_STAGE,),
         reads=("conversation_history",),

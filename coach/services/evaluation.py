@@ -10,6 +10,7 @@
 
 from coach.domain.assessment_rules import derive_weak_points
 from coach.domain.cursor import get_progress, mark_task_done
+from coach.domain.memory import SOURCE_EVALUATION, derive_profile, record_evidence
 from coach.domain.models import EvaluationResult
 from coach.llm import client
 from coach.prompts.tasks import EVALUATION_JUDGE_SYSTEM_PROMPT
@@ -63,6 +64,14 @@ def evaluate(state) -> EvaluationResult | None:
     return result
 
 
+def _task_id(result) -> str:
+    """把验收结论里的 day/task 拼成任务 id；两者缺一就返回空串。"""
+    day, index = result.get("day"), result.get("task")
+    if day is None or index is None:
+        return ""
+    return f"{day}-{index}"
+
+
 def apply_update(state) -> dict:
     """把验收结论应用到画像，并决定推进游标还是重做当前任务（纯代码）。"""
     result = state.get("latest_result") or {}
@@ -70,17 +79,21 @@ def apply_update(state) -> dict:
     score = float(result.get("mastery") or 0.0)
     action = str(result.get("next_action") or "retry")
 
-    # 1) 更新能力画像：已有知识点取新旧平均（平滑），新知识点直接写入
-    profile = dict(state.get("skill_profile") or {})
+    # 1) 先记一条**证据**（长期记忆唯一直接写的入口），再由证据**派生**画像。
+    #    语义与改造前逐字一致：已有知识点取新旧平均（平滑），新知识点直接写入 ——
+    #    只是合并规则从"就地改"收敛到 `memory.derive_profile` 一处
+    #    （见 docs/memory-design.md §5.2）。
+    #    `error_type` 随证据留存：改造前 latest_result 是单槽，重做成功就把它覆盖了。
     if topic:
-        if topic in profile:
-            try:
-                old_score = float(profile[topic])
-                profile[topic] = round((old_score + score) / 2, 2)
-            except (TypeError, ValueError):
-                profile[topic] = round(score, 2)
-        else:
-            profile[topic] = round(score, 2)
+        record_evidence(
+            state, topic,
+            source=SOURCE_EVALUATION,
+            verdict=action,
+            score=score,
+            error_type="、".join(result.get("error_types") or []),
+            task_id=_task_id(result),
+        )
+    profile = derive_profile(state)
     state["skill_profile"] = profile
 
     # 2) 薄弱点：与测评阶段同一套阈值规则

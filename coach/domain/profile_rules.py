@@ -16,6 +16,27 @@ OPTIONAL_PROFILE_FIELDS = ("sessions_per_week",)
 #: 提示词要求模型抽取、且 `merge_profile` 会合并的全部字段。
 EXTRACTABLE_PROFILE_FIELDS = PROFILE_FIELDS + OPTIONAL_PROFILE_FIELDS
 
+#: 单次可投入时长的**硬上下界**（v0.18，见 docs/memory-design.md §9）。
+#: 上界 120 分钟是**产品决策**：更长的"一次学习"在教学上应当拆开（间隔效应），
+#: 而且它让"一次学习最多多少轮对话"有了上界 —— 注入预算因此可预测。
+SESSION_MINUTES_MIN = 15
+SESSION_MINUTES_MAX = 120
+
+
+def clamp_session_minutes(value):
+    """把「单次可投入时长」钳到 [15, 120]；空值或不可解析返回 None（宁缺勿错）。
+
+    ⚠️ 这是**行为变化**：用户说"我一次能学 4 小时"时会被钳到 120。
+    调用方（`orchestration.executor`）会明确告知用户，不能让用户以为系统按 4 小时排。
+    """
+    if value is None or value == "":
+        return None
+    try:
+        minutes = int(float(value))
+    except (TypeError, ValueError):
+        return None
+    return max(SESSION_MINUTES_MIN, min(SESSION_MINUTES_MAX, minutes))
+
 
 def merge_profile(state, profile) -> list[str]:
     """把画像中的**非空**字段合并进 state，返回本轮被更新的字段名列表。
@@ -32,6 +53,10 @@ def merge_profile(state, profile) -> list[str]:
             continue
         if isinstance(value, str) and not value.strip():
             continue
+        if field == "session_minutes":
+            value = clamp_session_minutes(value)
+            if value is None:
+                continue
         if state.get(field) != value:
             state[field] = value
             updated.append(field)
