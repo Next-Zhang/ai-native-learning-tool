@@ -7,14 +7,14 @@
 - **不是聊天机器人**：围绕「目标澄清 → 能力测评 → 学习计划 → 学习任务 → 结果验收 → 画像更新 → 动态调整」的闭环运转。
 - **以验收为准**：学习者说「我会了」不算掌握，通过任务验收才算。验收强度**按你的时间预算分档**（L1 复述/解释 → L3 独立产出）。
 - **为碎片化时间设计**：基本单位是**「次」而不是「天」**——长期**路线图**（目标→里程碑）+ 短期**执行窗口**（一次一个能做完的小单元），窗口走完自动滚动并按你的实际速度重估。
-- **当前进度**：**v0.14**，闭环已用 4 次真实 API 会话验证；**182 个测试**（175 确定性 + 7 依赖真实模型）。
+- **当前进度**：**v0.17**，闭环已用 5 次真实 API 会话验证；**181 个测试**（173 确定性 + 8 需真实模型 / 显式跳过）。
 
 ## 文档索引
 
 | 想知道什么 | 看哪里 |
 |---|---|
-| **产品需求 / 用户 / 指标 / 验收**（唯一事实来源） | [docs/PRD.md](docs/PRD.md)（当前 **v0.14**） |
-| **架构决策 / 10 条不变量 / 框架完成度**（改代码前必读） | [docs/architecture.md](docs/architecture.md)（含**附录 A：框架缺口清单**） |
+| **产品需求 / 用户 / 指标 / 验收**（唯一事实来源） | [docs/PRD.md](docs/PRD.md)（当前 **v0.17**） |
+| **架构决策 / 11 条不变量 / 框架完成度**（改代码前必读） | [docs/architecture.md](docs/architecture.md)（含**附录 A：框架缺口清单**） |
 | 测试质量与覆盖结构（按断言对象分层） | [docs/test-audit.md](docs/test-audit.md) |
 | 运行方式、测试约定、**怎么加一个新能力** | 本文件下方 |
 
@@ -26,7 +26,7 @@
 接手 AI Native Learning Tool（学习教练 Agent）。仓库根 = 当前目录。
 
 先读（按序，不要跳过）：
-1. docs/architecture.md  —— 架构决策 + 10 条不变量（I-1…I-10）+ 附录 A 框架缺口
+1. docs/architecture.md  —— 架构决策 + 11 条不变量（I-1…I-11）+ 附录 A 框架缺口
 2. docs/PRD.md           —— 产品事实来源
 3. README.md（本文件）    —— 怎么跑、怎么测、怎么加能力
 
@@ -34,7 +34,7 @@
 
 必须遵守：
 - 一次一个小改动，每步可验证；不引入 LangGraph / 多 Agent / 向量库等大框架。
-- 改动前核对 10 条不变量。I-2/I-3 来自两个真实缺陷（X-16 教练抢答判定、X-17 自述覆盖状态），不要回退。
+- 改动前核对 11 条不变量。I-2/I-3 来自两个真实缺陷（X-16 教练抢答判定、X-17 自述覆盖状态），不要回退。
 - 加能力走能力注册表（domain/capabilities.py + executor.py），不改编排层；漏写 handler 有测试把关。
 - 测试用自研 runner（tests/_runner.py，PASS/FAIL/SKIP 三态）；"跳过"必须 raise SkipTest，绝不能 return。
 - LLM 调用失败必须有确定性兜底；状态迁移必须幂等、不覆盖新值、不删旧键。
@@ -76,11 +76,11 @@ App_landing/
 │   ├── config.py           # Settings：模型/温度/base_url/Key（导入不抛错）
 │   ├── llm/                # client.py —— 唯一 LLM 入口（json_call / chat）
 │   ├── metrics/            # 事件采集（JSONL）/ 汇总 / 导出 CLI
-│   ├── domain/             # 纯逻辑：models / stages / *_rules / cursor / state_schema
+│   ├── domain/             # 纯逻辑：models / stages / profile / *_rules / cursor / state_schema
 │   ├── prompts/            # 提示词集中：stages / tasks
 │   ├── services/           # 用例：profile / assessment / planning / daily_task / evaluation / coach
 │   ├── storage/            # state_store.py（读写）/ reset.py（清理与备份）
-│   ├── orchestration/      # turn.py —— 单轮流程 run_turn()
+│   ├── orchestration/      # executor.py（矩阵驱动）+ turn.py（薄壳 run_turn）
 │   └── cli/                # main.py —— 终端界面
 ├── rag/                # RAG / 知识库（本期不在 MVP 范围；详见下方章节）
 │   ├── crawl.py        # 爬虫：抓 runoob Python3 教程 → data/rag/raw/*.json
@@ -93,7 +93,7 @@ App_landing/
 │   ├── user_state.json
 │   └── rag/            # raw/ chunks.jsonl qdrant/ models/
 ├── evals/              # 评测集（dev/holdout）+ M-01 判分一致率 runner（详见下方章节）
-├── tests/              # 回归测试：182 个用例（175 确定性 + 7 真实模型）+ audit.py 审计工具
+├── tests/              # 回归测试：181 个用例（173 确定性 + 8 需真实模型）+ audit.py 审计工具
 └── .gitignore
 ```
 
@@ -113,7 +113,7 @@ App_landing/
 两条历史包袱已消除：① 模型名原本硬编码在 6 个文件里，现只在 `coach/config.py` 定义一处；② `_json_call()` 原本在 5 个模块里各有一份，现只有 `coach/llm/client.py` 一份。
 
 > 分层的原因与取舍见 `docs/PRD.md` 的 **S-03（统一模型配置）** 与 §2.1 架构定性。
-> **完整的 agent 架构决策**（编排范式 / 能力注册表 / 三级自主权 / 感知契约，含 10 条不变量）见 [docs/architecture.md](docs/architecture.md)。
+> **完整的 agent 架构决策**（编排范式 / 能力注册表 / 三级自主权 / 感知契约，含 11 条不变量）见 [docs/architecture.md](docs/architecture.md)。
 
 ### 加一个新能力要改什么
 
@@ -134,26 +134,6 @@ Capability(
 
 **不用改 `turn.py`。** 若要改**流程本身**（槽位顺序、推进点），那才是改骨架 ——
 这是有意设计的：**加能力应当容易，改流程应当难**。
-
-#### 旧模块 → 新位置对照（V0.8 重构）
-
-下方 **V0.2–V0.3e 章节按当时的文件名**记录（那是历史事实，未改写）；若要照它找代码，请用本表换算：
-
-| 旧模块（已删除） | 新位置 |
-|---|---|
-| `agent.py` | `coach/services/coach.py`（消息组装）+ `coach/llm/client.py`（模型调用） |
-| `config.py` | `coach/config.py`（`Settings`；**导入不再抛错**） |
-| `profile_extractor.py` | `coach/services/profile.py`（抽取）+ `coach/domain/models.py`（`UserProfile`） |
-| `assessor.py` | `coach/domain/assessment_rules.py`（判定映射/聚合/薄弱点）+ `coach/services/assessment.py`（出题/判分） |
-| `planner.py` | `coach/domain/plan_rules.py`（期限/窗口/清洗/兜底）+ `coach/services/planning.py`（生成/确认） |
-| `daily.py` | `coach/domain/cursor.py`（游标/任务查找）+ `coach/services/daily_task.py`（展示/提交识别） |
-| `evaluator.py` | `coach/domain/evaluation_rules.py`（完成度/动作一致性）+ `coach/services/evaluation.py`（判定/画像更新） |
-| `state.py` | `coach/domain/state_schema.py`（schema + `ensure_keys`）/ `coach/domain/profile_rules.py`（画像合并）/ `coach/storage/state_store.py`（读写） |
-| `stages.py` | `coach/domain/stages.py`（阶段常量/守卫/转换）+ `coach/prompts/stages.py`（阶段提示词） |
-| `reset.py` | `coach/storage/reset.py`（命令改为 `python -m coach.storage.reset`） |
-| `app.py`（252 行脚本） | `app.py`（薄入口）+ `coach/orchestration/turn.py`（单轮流程）+ `coach/cli/main.py`（界面渲染） |
-
-**不受影响**：`data/user_state.json` 的路径与 schema 未变（`ensure_keys` 仍能平滑升级旧文件），`rag/` 未改动；`tests/` 的**已有用例内容未变**（重构只改了导入路径；后续新增文件见「验收测试」）。
 
 ## 路线图
 
@@ -218,158 +198,9 @@ Capability(
 
 实现要点：
 - `rag/tool.py`：`should_retrieve()` 门控 + `build_context()` 构造带 `[1][2]` 编号的参考资料。
-- `agent.py`：检索结果作为**独立的第二条 system 消息**注入（不写入对话历史，避免历史膨胀）；
+- `coach/services/coach.py`：检索结果作为**独立的第二条 system 消息**注入（不写入对话历史，避免历史膨胀）；
   要求模型优先依据资料回答、标注编号、资料不足时明说。
 - `chat_with_coach()` 返回 `(回答, 来源列表)`，`app.py` 据此打印来源章节。
-
-## V0.2 结构化用户画像
-
-从"能聊天"升级为"能把用户自然语言变成结构化状态"——这是 Chatbot 到 Agent 的分水岭。
-
-```text
-用户："我想一个月学 Python 数据分析，以前学过一点基础，每天能学 30 分钟"
-      ↓ extract_profile()  第二次 LLM 调用（JSON 模式 + Pydantic 校验）
-{"learning_goal":"Python 数据分析","current_level":"只学过一点基础",
- "daily_minutes":30,"target_date":"一个月"}
-      ↓ merge_profile()    只合并非空字段（没提到的不覆盖已收集的信息）
-      ↓ maybe_advance_stage()
-四项齐全 → current_stage: goal_clarification → assessment
-```
-
-设计要点：
-- **增量抽取**：只解析最新一条用户消息，累积交给 `merge_profile`（避免历史重算与旧值覆盖新值）。
-- **空值不覆盖**：`None` 不写入 state —— "这轮没提到"≠"信息不存在"。
-- **阶段守卫**：`learning_goal / current_level / daily_minutes / target_date` 四项全齐才推进到 `assessment`。
-- **状态回灌**：把"已收集信息 + 仍缺失字段"注入对话，教练不再重复提问，只追问缺的那项。
-- **失败兜底**：抽取失败返回空画像并告警，绝不中断对话。
-
-新增/改动：`profile_extractor.py`（新增）、`state.py`（`merge_profile` / `profile_complete`）、
-`agent.py`（已知信息注入）、`app.py`（每轮抽取并打印画像进度）。阶段推进已迁至 `stages.py`。
-
-## V0.3 Agent 状态机
-
-主干阶段（`stages.py` 是转换规则与守卫的唯一来源）：
-
-```text
-goal_clarification → assessment → planning → learning → evaluation → profile_update
-                                                                          ↓
-                                                          learning / review / completed
-```
-
-**每个阶段一套系统提示词**——阶段决定"教练此刻该做什么"，这是状态驱动行为的核心：
-
-| 阶段 | 教练行为准则 |
-|---|---|
-| 目标澄清 | 一次只问 1~2 个最关键的问题，不提前给计划 |
-| 能力测评 | 3~5 个由易到难的实际任务，**一次只出一道**，不用"你会不会"来判断 |
-| 学习计划 | 只规划**未来 7 天**（滚动窗口；不足 7 天按实际期限） |
-| 每日任务 | 每次只给一个 `today_task`（目标/材料/练习/预计时间/完成标准） |
-| 结果验收 | 要求提交证据，判定完成度与错误类型，给出 重试/补充/通过 |
-| 画像更新 | 更新掌握度与薄弱点；重大变更先征求用户确认 |
-
-**转换守卫**（条件不满足绝不推进，每次只走一步）：
-
-| 转换 | 守卫条件 |
-|---|---|
-| 目标澄清 → 能力测评 | 四项信息齐全（目标/水平/每日时间/期限） |
-| 能力测评 → 学习计划 | 已产出 `skill_profile` |
-| 学习计划 → 每日任务 | 已产出 `current_plan` **且用户已确认**（`plan_confirmed`） |
-| 每日任务 → 结果验收 | 有 `today_task` 且用户已提交结果 |
-| 结果验收 → 画像更新 | 已产出验收结论（`latest_result`） |
-| 画像更新 → 每日任务（**回路**） | 验收结论已应用（通过则推进到下一个任务，未通过则重做当前任务） |
-
-其它要点：
-- 旧状态文件由 `state.ensure_keys()` **自动补齐** V0.3 新字段（`assessment_progress` / `pending_submission` / `latest_result` / `latest_result_applied` / `plan_confirmed` / `plan_progress`），不覆盖已有数据。
-- 主干已闭环；后续版本：V0.4 Human-in-the-loop、V0.5 Evaluation、复习系统、7 天窗口滚动重排（当前窗口排完后暂只提示"已完成"）。
-
-新增/改动：`stages.py`（新增）、`state.py`（新字段 + `ensure_keys`，阶段推进迁出）、
-`agent.py`（按阶段选提示词）、`app.py`（走 `try_advance` 并打印阶段变化）。
-
-### V0.3b 能力测评（`assessor.py`）
-
-```text
-进入 assessment
-  ① ensure_plan()      生成 3~5 道由易到难的大纲（主题 + 难度）→ state["assessment_progress"]
-  ② record_answer()    每轮把「上一轮的题 + 本轮用户回答」交给 LLM 判三档
-  ③ finalize()         答满题量 → 代码聚合出 skill_profile，并按阈值产出 weak_points
-  ④ 守卫自动放行        skill_profile 非空 → planning
-```
-
-关键设计：
-- **三档判定**：`mastered=1.0 / partial=0.5 / missing=0.0`（中文别名如"掌握/部分正确/不会"自动归一）。
-- **聚合与阈值在代码里，不在 LLM 手里**：同一知识点多题取平均；`weak_points = 分数 < 0.6`（阈值/题量都是模块常量，可调）。
-- **汇总不额外调 LLM**：判定只有三档，聚合是确定性计算 —— 比"再让模型汇总一次"更省、更稳、可测试。
-- **只问当前这道题**：测评进度会注入对话（`assessor.describe_progress()`），避免跳题或一次抛出多题。
-- **兜底**：出题失败用目标生成 3 道通用递进题；判卷调用失败按 `missing` 记录，不中断测评。
-
-新增/改动：`assessor.py`（新增）、`agent.py`（注入测评进度）、`app.py`（测评阶段记账与收尾）。
-
-### V0.3c 学习计划（`planner.py`）
-
-```text
-进入 planning
-  ① plan_horizon()     窗口 = min(7, 期限天数)；期限不足 7 天按实际，解析不出则默认 7
-  ② generate_plan()    围绕 目标/水平/每日时间/能力画像/薄弱点 生成 N 天计划（LLM + JSON）
-  ③ ensure_plan()      写入 current_plan = {horizon_days, start_date, days, version}
-  ④ 教练照实呈现计划（计划摘要会注入对话，不让模型另编一份）
-  ⑤ confirm_plan()     **B2：LLM 判断用户是否确认**；确认后 → 守卫放行 → learning
-```
-
-关键设计：
-- **7 天是"步长"而非"总时长"**：目标是 3 个月，也每次只排最近 7 天，滚动推进。
-- **计划结构固定**：每天 `theme` + 1~3 个任务，每个任务含 `goal / material / exercise / minutes / done_criteria`（可执行、可验收）。
-- **清洗与兜底在代码里**：天数对齐窗口（截断 + 占位补齐）、重编号、任务数上限 3、空任务丢弃；模型不可用时用**围绕薄弱点的确定性兜底计划**。
-- **先确认、后教学**：`plan_confirmed` 未置位时守卫拦在 planning；确认判定由 LLM 完成（含糊、反问、要求修改一律不算确认），判定失败保持等待、绝不误进。
-
-新增/改动：`planner.py`（新增）、`state.py`（+`plan_confirmed`）、`stages.py`（守卫加确认条件）、
-`agent.py`（注入计划摘要）、`app.py`（计划阶段接线）。
-
-### V0.3d 每日任务（`daily.py`）
-
-```text
-进入 learning
-  ① 计划游标 (day, task) → 取出**一个**任务
-  ② build_today_task()   写入 today_task：目标/材料/练习/预计时间/完成标准
-  ③ 教练照实呈现这一个任务（任务注入对话，不让它另编或提前布置后续任务）
-  ④ detect_submission()  判断用户是否提交了可验收结果（LLM）
-  ⑤ 命中提交 → 写 pending_submission → 守卫放行 → evaluation
-  ⑥ mark_task_done()     验收通过后推进游标（由 V0.3e 调用）
-```
-
-游标模型（"每次只给一个任务"）：`plan_progress = {day, task, completed, finished}`
-- 当天还有任务 → `task + 1`；当天完成 → 下一天 `task = 1`；全部完成 → `finished = true`
-- 全空的天会被跳过；计划排完后不会重复发最后一个任务
-
-关键设计：
-- **只讲当前这一个任务**：任务与进度都会注入对话，教练不能跳到后面。
-- **提交识别用 LLM**（与 V0.3c 的确认判定同套路）：提问／闲聊／"快好了"都不算提交；判定失败保持 learning，绝不误推进。
-- **提交内容原样留存**（代码可原样摘录）到 `pending_submission`，供 V0.3e 验收。
-
-新增/改动：`daily.py`（新增）、`state.py`（+`plan_progress`）、`agent.py`（注入任务与待验收内容）、`app.py`（learning 阶段接线）。
-
-### V0.3e 结果验收与画像更新（`evaluator.py`）
-
-```text
-用户提交 (pending_submission)
-  ① evaluate()      结构化判定：完成度 / 掌握度 / 错误类型 / 下一步
-  ② 完成度三档      completed=1.0 / partial=0.5 / not_completed=0.0（代码映射，不让模型给分）
-  ③ 一致性守卫      pass 只在 completed 时允许；partial → supplement；not_completed → retry
-  ④ 教练按判定沟通（结论注入对话，不让它另编）
-  ⑤ apply_update()  代码侧更新画像并决定下一步：
-       pass  → mark_task_done() 推进游标（下一个任务）
-       其它  → 保留当前任务、清空提交（让用户重做）
-  ⑥ 阶段回路        结果验收 → 画像更新 → 每日任务
-```
-
-关键设计：
-- **掌握度由完成度推导**（1.0 / 0.5 / 0.0），与 V0.3b 测评口径一致。
-- **动作一致性在代码里强制**：模型给出"没做完却通过"时会被纠正为 supplement / retry。
-- **画像平滑更新**：已有知识点取新旧平均（避免被单次表现拉偏），薄弱点复用 `< 0.6` 阈值规则。
-- **错误类型结构化留存**（如"概念混淆""语法错误"），供后续复习系统使用。
-- **判定失败保持 evaluation**（无 Key / 网络异常），绝不写入假判定。
-
-新增/改动：`evaluator.py`（新增）、`state.py`（+`latest_result_applied`）、`stages.py`（+`profile_update → learning` 回路）、
-`agent.py`（注入判定结论）、`app.py`（验收阶段接线）。
 
 ## 测试用：状态清理
 
@@ -423,7 +254,7 @@ goal_clarification → assessment → planning → learning → evaluation → p
 - **审计**：`python tests/audit.py` 按**断言对象**给用例分类（纯函数 / 行为 / 持久化 / 契约 / live），
   并检查"跳过是否被当作通过"。报告见 [docs/test-audit.md](docs/test-audit.md)。
 
-当前读数（无 Key）：**175 通过 / 0 失败 / 7 跳过**；配 Key 时为 **182 通过 / 0 跳过**。
+当前读数（无 Key）：**173 通过 / 0 失败 / 8 跳过**（无 Key 时需真实模型的用例显式跳过，不计入通过）。
 
 ### 各版本用例
 

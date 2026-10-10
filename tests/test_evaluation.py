@@ -10,7 +10,7 @@ r"""V0.3e 结果验收与画像更新验收测试（纯 Python 断言脚本）�
 - 错误类型归一（None / 字符串 / 列表 / 非法类型）
 - apply_update：pass 分支推进游标并更新画像；retry 分支保留任务、清空提交
 - 画像新旧平均、薄弱点按 < 0.6 重算
-- 守卫链：无判定不得进 profile_update；未应用不得回 learning
+- 守卫链：未应用验收结论不得回 learning（v0.16 合并了 profile_update 阶段）
 - 无 Key 时判定失败不误推进；真实用例：提交正确代码判通过、乱答判重做
 """
 
@@ -30,7 +30,6 @@ from coach.domain.models import EvaluationResult
 from coach.domain.stages import (
     STAGE_EVALUATION,
     STAGE_LEARNING,
-    STAGE_PROFILE_UPDATE,
     try_advance,
 )
 from coach.domain.state_schema import DEFAULT_STATE
@@ -190,18 +189,16 @@ def test_apply_update_new_topic_and_partial():
 def test_guard_chain_evaluation_to_learning():
     state = _evaluation_state()          # 有提交，但没有判定结论
 
-    # 无结论 -> 不能进入画像更新
+    # 无结论 -> 不能推进
     assert try_advance(state) is None
     assert state["current_stage"] == STAGE_EVALUATION
 
-    # 有结论 -> 进入画像更新
+    # 有结论但**未应用到画像** -> 仍不能推进
+    # （v0.16：evaluation → learning 是直接回路，守卫是"已应用"，防止跳过画像更新）
     state["latest_result"] = _latest("completed", "pass")
-    assert try_advance(state) == STAGE_PROFILE_UPDATE
-
-    # 未应用 -> 不能回到学习任务
     assert state["latest_result_applied"] is False
     assert try_advance(state) is None
-    assert state["current_stage"] == STAGE_PROFILE_UPDATE
+    assert state["current_stage"] == STAGE_EVALUATION
 
     # 应用后 -> 回到学习任务
     apply_update(state)
@@ -250,7 +247,7 @@ def test_live_evaluate_pass_and_retry():
     assert result.next_action == "pass"
     assert good["latest_result"]["mastery"] == 1.0
     assert good["latest_result_applied"] is False
-    assert try_advance(good) == STAGE_PROFILE_UPDATE
+    assert try_advance(good) is None       # v0.16：未应用不得推进（回 learning 的唯一守卫）
 
     # 乱答 -> not_completed / retry
     bad = _evaluation_state(pending_submission={"content": "我不会，随便写点", "reason": "提交"})

@@ -414,6 +414,58 @@ def test_step_order_advance_happens_between_stage_pre_and_dialogue():
 
 
 # ---------------------------------------------------------------------------
+# 6) v0.16 新增行为的回归保护
+# ---------------------------------------------------------------------------
+
+def test_render_profile_covers_all_dimensions():
+    """**X-18 回归保护**：画像渲染必须带上**全部**已知维度。
+
+    缺陷 X-18：同一份画像曾被手工拼三遍，而喂给教练对话的那份**漏掉了**
+    `skill_profile` / `weak_points` —— "方案生成知道你的薄弱点，但跟你对话的教练不知道"。
+    现在所有消费方共用**一个渲染出口**，这条用例防止它再被改回手工拼装。
+    """
+    from coach.domain.profile import render_profile
+
+    state = {
+        "learning_goal": "清洗销售数据",
+        "current_level": "会写简单脚本",
+        "session_minutes": 30,
+        "target_date": "2026-10-15",
+        "skill_profile": {"pandas 读取": 0.9, "groupby": 0.3},
+        "weak_points": ["groupby"],
+        "preferences": {"explain_style": "example_first"},
+        "plan_progress": {"completed": ["1-1"], "attempts": 2},
+    }
+    text = render_profile(state)
+
+    for token in ("清洗销售数据", "会写简单脚本", "30 分钟", "2026-10-15",
+                  "groupby", "example_first"):
+        assert token in text, f"渲染文本缺少 {token!r}：\n{text}"
+    # I-11：自评必须显式标注"仅参考"，避免模型把它当成判定
+    assert "仅参考" in text
+
+
+def test_conversation_window_trims_and_archives():
+    """**S-09**：超出窗口的对话进归档（**不丢**），注入的只有最近 N 条。"""
+    from coach.orchestration.executor import CONVERSATION_WINDOW, trim_history
+
+    n = CONVERSATION_WINDOW + 4
+    state = {"conversation_history": [{"role": "user", "content": f"m{i}"} for i in range(n)]}
+    trim_history(state)
+
+    assert len(state["conversation_history"]) == CONVERSATION_WINDOW
+    assert len(state["conversation_archive"]) == 4
+    # 归档保存**最早**的，窗口保留**最新**的
+    assert state["conversation_archive"][0]["content"] == "m0"
+    assert state["conversation_history"][-1]["content"] == f"m{n - 1}"
+
+    # 窗口没满时不做任何事（不产生空的归档字段）
+    short = {"conversation_history": [{"role": "user", "content": "x"}]}
+    trim_history(short)
+    assert "conversation_archive" not in short
+
+
+# ---------------------------------------------------------------------------
 # 极简 runner（共用实现见 tests/_runner.py）
 # ---------------------------------------------------------------------------
 

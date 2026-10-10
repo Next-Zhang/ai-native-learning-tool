@@ -221,7 +221,8 @@ def test_roll_window_moves_on_and_recalibrates():
 # ---------------------------------------------------------------------------
 
 def test_normalize_plan_truncates_to_horizon():
-    data = {"days": [{"theme": f"主题{i}", "tasks": [{"goal": f"目标{i}"}]}
+    data = {"days": [{"theme": f"主题{i}",
+                      "tasks": [{"goal": f"目标{i}", "done_criteria": f"能完成目标{i}"}]}
                      for i in range(1, 6)]}
     days = normalize_plan_data(data, horizon=3)
     assert len(days) == 3
@@ -242,11 +243,11 @@ def test_normalize_plan_limits_tasks_and_drops_empty():
     data = {"days": [{
         "theme": "任务清洗",
         "tasks": [
-            {"goal": "任务1", "minutes": "45分钟"},
-            {"goal": "任务2"},
-            {"goal": "任务3"},
-            {"goal": "任务4"},                      # 超出每天上限，应被截断
-            {"material": "", "exercise": ""},       # 全空 -> 丢弃
+            {"goal": "任务1", "minutes": "45分钟", "done_criteria": "能跑通"},
+            {"goal": "任务2", "done_criteria": "能解释"},
+            {"goal": "任务3", "done_criteria": "能复述"},
+            {"goal": "任务4", "done_criteria": "能应用"},   # 超出每天上限，应被截断
+            {"material": "", "exercise": ""},              # 全空 -> 丢弃
         ],
     }]}
     days = normalize_plan_data(data, horizon=1, session_minutes=60)
@@ -282,13 +283,33 @@ def test_clamp_task_minutes_floor_only_guards_the_cap():
 
 
 def test_normalize_plan_data_clamps_overlong_tasks():
-    """清洗阶段必须把超长任务砍到单次可完成 —— 这是碎片化的硬约束。"""
+    """清洗阶段必须把超长任务砍到单次可完成 —— 这是任务粒度的硬约束。"""
     data = {"days": [{"theme": "t", "tasks": [
-        {"goal": "g1", "minutes": 90},
-        {"goal": "g2", "minutes": 10},
+        {"goal": "g1", "minutes": 90, "done_criteria": "能跑通"},
+        {"goal": "g2", "minutes": 10, "done_criteria": "能解释"},
     ]}]}
     tasks = normalize_plan_data(data, horizon=1, session_minutes=15)[0]["tasks"]
     assert [t["minutes"] for t in tasks] == [15, 10]
+
+
+def test_normalize_plan_drops_tasks_without_done_criteria():
+    """**可检验标准是验收的锚点（v0.16）**：没有它，任务无法被验收，闭环即断。
+
+    缺 `done_criteria` 的任务被**丢弃**（而不是编一个假的完成标准）；
+    若整天都因此没有任务，整体走兜底 —— 而兜底任务**自带**完成标准。
+    """
+    data = {"days": [{"theme": "t", "tasks": [
+        {"goal": "没有标准", "minutes": 10},
+        {"goal": "有标准", "minutes": 10, "done_criteria": "能跑通"},
+    ]}]}
+    tasks = normalize_plan_data(data, horizon=1, session_minutes=30)[0]["tasks"]
+    assert [t["goal"] for t in tasks] == ["有标准"]
+
+    # 全部缺标准 -> 整天无任务 -> 整体兜底，且兜底任务都带完成标准
+    empty = {"days": [{"theme": "t", "tasks": [{"goal": "x", "minutes": 5}]}]}
+    days = normalize_plan_data(empty, horizon=2, goal="G", session_minutes=30)
+    assert all(d["tasks"] for d in days)
+    assert all(t.get("done_criteria") for d in days for t in d["tasks"])
 
 
 def test_fallback_plan_respects_session_minutes():

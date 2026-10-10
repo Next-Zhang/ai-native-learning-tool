@@ -20,22 +20,24 @@ STAGE_ASSESSMENT = "assessment"
 STAGE_PLANNING = "planning"
 STAGE_LEARNING = "learning"
 STAGE_EVALUATION = "evaluation"
-STAGE_PROFILE_UPDATE = "profile_update"
-STAGE_REVIEW = "review"
 STAGE_COMPLETED = "completed"
 
 # 主干阶段（按顺序推进）
+# **v0.16 删除 `profile_update`**：它在同一轮内被穿过（evaluation → profile_update → learning
+# 连推两次），用户与模型都看不到它；且它的提示词分支因"对话用本轮起始阶段"（I-2）而不可达。
 STAGES = (
     STAGE_GOAL_CLARIFICATION,
     STAGE_ASSESSMENT,
     STAGE_PLANNING,
     STAGE_LEARNING,
     STAGE_EVALUATION,
-    STAGE_PROFILE_UPDATE,
 )
 
 # 出口阶段（不是线性主干，由业务流程决定进入）
-EXIT_STAGES = (STAGE_REVIEW, STAGE_COMPLETED)
+# **v0.16 删除 `review`**：从未有任何转换指向它，也没有调度器与时间维度。
+# ⚠️ `completed` 目前**双向不可达**（无转换指向它、也无转换从它出发）。保留常量以便将来
+# 实现"目标完成后收尾"，但它**不是活阶段**——判定"目标完成"请看 `plan_progress.finished`。
+EXIT_STAGES = (STAGE_COMPLETED,)
 
 ALL_STAGES = STAGES + EXIT_STAGES
 
@@ -45,8 +47,6 @@ STAGE_LABELS = {
     STAGE_PLANNING: "学习计划",
     STAGE_LEARNING: "学习任务",
     STAGE_EVALUATION: "结果验收",
-    STAGE_PROFILE_UPDATE: "画像更新",
-    STAGE_REVIEW: "复习",
     STAGE_COMPLETED: "已完成",
 }
 
@@ -86,13 +86,11 @@ def _guard_submission(state) -> bool:
     return bool(state.get("today_task")) and bool(state.get("pending_submission"))
 
 
-def _guard_latest_result(state) -> bool:
-    """已有验收结论才允许进入画像更新。"""
-    return state.get("latest_result") is not None
-
-
 def _guard_update_applied(state) -> bool:
-    """画像更新已应用，才允许从 profile_update 回到学习任务（V0.3e 回路）。
+    """验收结论已应用到画像与游标，才允许从验收回到学习任务。
+
+    **v0.16 起这是 `evaluation → learning` 直接回路的唯一守卫**
+    （原 `evaluation → profile_update → learning` 的两段式已合并为一个阶段内完成）。
 
     同样用 `to_bool`：旧的 `bool("false") is True` 会让"未应用"被判成"已应用"，
     从而在画像还没更新完时就回到学习任务。
@@ -106,12 +104,14 @@ TRANSITIONS = (
     (STAGE_ASSESSMENT, STAGE_PLANNING, _guard_skill_profile, "已产出能力画像"),
     (STAGE_PLANNING, STAGE_LEARNING, _guard_plan_confirmed, "计划已生成且用户已确认"),
     (STAGE_LEARNING, STAGE_EVALUATION, _guard_submission, "已提交待验收结果"),
-    (STAGE_EVALUATION, STAGE_PROFILE_UPDATE, _guard_latest_result, "已产出验收结论"),
 )
 
-# 回路：画像更新完成后回到学习任务（继续下一个任务或重做当前任务）
+# 回路：验收结论应用后回到学习任务。
+# **v0.16**：原先是 `profile_update → learning`（两段式）；`profile_update` 阶段删除后，
+# 回路变成 `evaluation → learning` 的**直接回路**，守卫是"验收已应用到画像"。
+# 之所以与 `TRANSITIONS` 分开：主干必须保持**线性链**（见 `test_chain_is_linear`）。
 RESUME_TRANSITIONS = (
-    (STAGE_PROFILE_UPDATE, STAGE_LEARNING, _guard_update_applied, "画像更新已应用"),
+    (STAGE_EVALUATION, STAGE_LEARNING, _guard_update_applied, "验收已应用到画像与游标"),
 )
 
 ALL_TRANSITIONS = TRANSITIONS + RESUME_TRANSITIONS

@@ -17,6 +17,10 @@ DEFAULT_STATE = {
 
     "current_stage": STAGE_GOAL_CLARIFICATION,
 
+    # v0.16：学习偏好（画像维度 d）。默认**空**——由澄清阶段问 1 个关键问题、
+    # 同一次抽取顺带获得、以及行为推断三者共同填充（PRD §2.5.2）。
+    "preferences": {},
+
     "skill_profile": {},
     "weak_points": [],
 
@@ -41,7 +45,11 @@ DEFAULT_STATE = {
     "latest_result": None,         # 最近一次验收结论
     "latest_result_applied": False,  # V0.3e：该结论是否已应用到画像
 
-    "conversation_history": []
+    "conversation_history": [],
+
+    # v0.16（S-09）：移出对话窗口的明细进这里 —— **不丢信息，但不注入模型**。
+    # 目的：压制"每轮注入全量 history"带来的成本与暴露面（PRD X-09 / X-11）。
+    "conversation_archive": [],
 }
 
 #: 旧字段 → 新字段。

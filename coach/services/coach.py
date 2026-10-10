@@ -10,13 +10,13 @@ RAG 采用**惰性导入**：RAG 本期不在范围，缺失时不应影响主�
 `cli.main` 与 `orchestration.turn` 都没有 try/except，抛出去就是整个会话崩掉。
 """
 
+from coach.domain.profile import render_profile
 from coach.domain.profile_rules import PROFILE_FIELDS
 from coach.domain.stages import (
     STAGE_ASSESSMENT,
     STAGE_EVALUATION,
     STAGE_LEARNING,
     STAGE_PLANNING,
-    STAGE_PROFILE_UPDATE,
     stage_label,
 )
 from coach.llm import client
@@ -47,7 +47,10 @@ _PROFILE_LABELS = {
 
 
 def describe_known_profile(state, stage: str | None = None) -> str:
-    """把 state 里已填写的画像字段整理成可读文本；全空则返回空字符串。
+    """把**用户画像**与阶段上下文整理成可注入对话的权威状态文本。
+
+    画像部分由 `domain.profile.render_profile()` 提供（**唯一渲染出口**）；
+    本函数只在其上叠加"还缺什么"与**阶段相关**的注入。
 
     `stage` 可显式覆盖：调用方应传入**本轮起始阶段**。状态机可能在本轮已经
     推进（如"用户刚提交"→ evaluation），但模型不该抢在代码判定之前
@@ -55,18 +58,13 @@ def describe_known_profile(state, stage: str | None = None) -> str:
     """
     if not state:
         return ""
-    lines = []
-    for field, label in _PROFILE_LABELS.items():
-        value = state.get(field)
-        if value in (None, "", []):
-            continue
-        if field == "session_minutes":
-            value = f"{value} 分钟"
-        elif field == "sessions_per_week":
-            value = f"约 {value} 次/周"
-        lines.append(f"- {label}：{value}")
-    if not lines:
-        return ""
+    lines: list[str] = []
+    # 画像部分走 **domain.profile 的唯一渲染出口**。
+    # 这修掉了 X-18：以前这里手工挑字段，**漏掉了 skill_profile / weak_points**，
+    # 于是"方案生成知道你的薄弱点，但跟你对话的教练不知道"。
+    rendered = render_profile(state)
+    if rendered:
+        lines.append(rendered)
     # 明确告知还缺什么，让“状态”真正驱动下一步提问。
     # **只列必填项** —— 可选项（每周几次）不该把用户卡在澄清阶段。
     missing = [
@@ -106,8 +104,9 @@ def describe_known_profile(state, stage: str | None = None) -> str:
                 )
             else:
                 lines.append(f"- 用户已提交待验收内容：{submission['content'][:400]}")
-    # 验收/画像更新阶段：把结构化判定结论交给教练，照实沟通
-    if stage in (STAGE_EVALUATION, STAGE_PROFILE_UPDATE):
+    # 验收阶段：把结构化判定结论交给教练，照实沟通
+    # （v0.16 删除了 profile_update 阶段，其分支已不可达）
+    if stage == STAGE_EVALUATION:
         result_text = describe_result(state)
         if result_text:
             lines.append(result_text)

@@ -15,8 +15,6 @@
 
 这样"加能力"= 加一条注册表记录 + 一个可调用对象（**不动 `turn.py`**），
 而"改流程"仍然必须显式改骨架（应当难改）。
-
-`ALLOWED_ACTIONS` 同时是 **I-6** 的依据：模型的提议只能从这个集合里选。
 """
 
 from dataclasses import dataclass
@@ -26,7 +24,6 @@ from coach.domain.confirmations import GATED_ACTIONS
 from coach.domain.stages import ALL_STAGES
 
 __all__ = [
-    "ALLOWED_ACTIONS",
     "ANY_STAGE",
     "Capability",
     "KINDS",
@@ -37,15 +34,11 @@ __all__ = [
     "SLOT_DIALOGUE",
     "SLOT_EVALUATION_APPLY",
     "SLOT_INTAKE",
-    "SLOT_LABELS",
     "SLOT_STAGE_POST",
     "SLOT_STAGE_PRE",
     "SLOTS",
     "STAGE_SOURCE_LIVE",
     "STAGE_SOURCE_TURN_START",
-    "STATUS_EXISTING",
-    "STATUS_PLANNED",
-    "allowed_actions",
     "capabilities_for",
     "select_capabilities",
     "validate_registry",
@@ -73,22 +66,9 @@ SLOTS = (
     SLOT_CLOSING,
 )
 
-SLOT_LABELS = {
-    SLOT_INTAKE: "入口（画像抽取）",
-    SLOT_STAGE_PRE: "阶段前置（写状态让守卫满足）",
-    SLOT_STAGE_POST: "推进后阶段动作",
-    SLOT_DIALOGUE: "对话",
-    SLOT_AFTER_DIALOGUE: "对话后记账",
-    SLOT_EVALUATION_APPLY: "应用判定",
-    SLOT_CLOSING: "收尾",
-}
-
 ANY_STAGE = "*"
 
 KINDS = ("perception", "planning", "evaluation", "memory", "dialogue", "tool", "teaching", "engagement")
-
-STATUS_EXISTING = "existing"
-STATUS_PLANNED = "planned"
 
 #: 用**本轮起始阶段**（`stage_before`）选步骤，而不是当前阶段。
 #: 只有"收尾检查"类能力需要它 —— 因为 `turn.py` 的 ⑩ 用的是推进**前**捕获的
@@ -120,7 +100,6 @@ class Capability:
     order: int                     # 槽位内的确定性顺序
     description: str = ""
     enabled: bool = True
-    status: str = STATUS_EXISTING
     action_id: str | None = None   # danger 级能力必须给出（I-4）
     stage_source: str = STAGE_SOURCE_LIVE   # live | turn_start
 
@@ -138,7 +117,7 @@ class Capability:
 # ---------------------------------------------------------------------------
 # 注册表：**现有 14 条**（对应原 turn.py 的 11 步；S-12 的窗口滚动已落地）；
 # **planned 7 条**是已确认方案的占位
-# （enabled=False，不参与执行，也不进入 ALLOWED_ACTIONS）
+# （enabled=False，不参与执行）
 # ---------------------------------------------------------------------------
 
 REGISTRY: tuple[Capability, ...] = (
@@ -231,14 +210,14 @@ REGISTRY: tuple[Capability, ...] = (
     ),
     Capability(
         name="memory.profile_apply",
-        kind="memory", slot=SLOT_EVALUATION_APPLY, stages=("evaluation", "profile_update"),
+        kind="memory", slot=SLOT_EVALUATION_APPLY, stages=("evaluation",),
         reads=("latest_result",),
         writes=("skill_profile", "weak_points", "plan_progress",
                 "latest_result_applied", "today_task", "pending_submission"),
         calls_llm=False, autonomy=Autonomy.WRITE.value, order=110,
         description=(
-            "应用验收结论：推进 evaluation→profile_update、平滑更新画像与游标、"
-            "再按 pass/retry 推进 profile_update→learning（**本能力内部含两个条件推进**）"
+            "应用验收结论：平滑更新画像与游标，并推进 evaluation→learning"
+            "（v0.16 合并了原 profile_update 阶段的两段式推进）"
         ),
     ),
     Capability(
@@ -274,65 +253,6 @@ REGISTRY: tuple[Capability, ...] = (
         description="记录本轮对话并落盘",
     ),
 
-    # ---- planned：已确认方案（PRD S-13 / S-14 / S-15 / S-16）的占位 ----
-    # （S-12 的窗口滚动已落地，见上面的 `planning.window_roll`）
-    Capability(
-        name="perception.plan_parse",
-        kind="perception", slot=SLOT_STAGE_PRE, stages=("planning",),
-        reads=("user_plan",), writes=("user_plan",),
-        calls_llm=True, autonomy=Autonomy.WRITE.value, order=15,
-        description="[S-16] 把用户自带的自由文本计划解析为结构化任务",
-        enabled=False, status=STATUS_PLANNED,
-    ),
-    Capability(
-        name="planning.plan_align",
-        kind="planning", slot=SLOT_STAGE_PRE, stages=("planning",),
-        reads=("user_plan", "roadmap"), writes=("roadmap",),
-        calls_llm=True, autonomy=Autonomy.WRITE.value, order=16,
-        description="[S-16] 把用户计划与目标/水平/单次时长对齐，产出里程碑",
-        enabled=False, status=STATUS_PLANNED,
-    ),
-    Capability(
-        name="planning.plan_diff",
-        kind="planning", slot=SLOT_STAGE_PRE, stages=("planning",),
-        reads=("user_plan", "roadmap"), writes=("plan_diff",),
-        calls_llm=False, autonomy=Autonomy.WRITE.value, order=17,
-        description="[S-16] 产出差异报告（保留/补充/调整/缺口）；原计划只读保留（I-7）",
-        enabled=False, status=STATUS_PLANNED,
-    ),
-    Capability(
-        name="perception.evidence_check",
-        kind="perception", slot=SLOT_STAGE_PRE, stages=("evaluation",),
-        reads=("pending_submission",), writes=(),
-        calls_llm=True, autonomy=Autonomy.READ.value, order=55,
-        description="[S-13] 在判定前检查证据是否够用（不够则走追问，而不是硬判）",
-        enabled=False, status=STATUS_PLANNED,
-    ),
-    Capability(
-        name="evaluation.ask_followup",
-        kind="evaluation", slot=SLOT_STAGE_POST, stages=("evaluation",),
-        reads=("pending_submission",), writes=("followup_count",),
-        calls_llm=True, autonomy=Autonomy.WRITE.value, order=75,
-        description="[S-13] 证据不足时生成**一次**限定追问（上限由代码判定）",
-        enabled=False, status=STATUS_PLANNED,
-    ),
-    Capability(
-        name="engagement.feedback",
-        kind="engagement", slot=SLOT_CLOSING, stages=(ANY_STAGE,),
-        reads=("plan_progress", "engagement"), writes=("engagement",),
-        calls_llm=False, autonomy=Autonomy.READ.value, order=140,
-        description="[S-15] 趣味化反馈（**仅反馈层**；不得写判定字段 —— I-9）",
-        enabled=False, status=STATUS_PLANNED,
-    ),
-    Capability(
-        name="policy.exception_transition",
-        kind="perception", slot=SLOT_INTAKE, stages=(ANY_STAGE,),
-        reads=("current_stage",), writes=("current_stage",),
-        calls_llm=False, autonomy=Autonomy.DANGER.value, order=5,
-        action_id=None,   # 启用时必须登记（换目标 = change_learning_goal）
-        description="[S-14] 已登记的例外转移（换任务/缩短本次/结束窗口/跳过测评/换目标）",
-        enabled=False, status=STATUS_PLANNED,
-    ),
 )
 
 REGISTRY_BY_NAME: dict[str, Capability] = {cap.name: cap for cap in REGISTRY}
@@ -374,17 +294,6 @@ def select_capabilities(
     return tuple(picked)
 
 
-#: 阶段 → 允许的动作集（**I-6 的唯一依据**：提议不得越出此集合）
-ALLOWED_ACTIONS: dict[str, frozenset[str]] = {
-    stage: frozenset(cap.name for cap in capabilities_for(stage))
-    for stage in ALL_STAGES
-}
-
-
-def allowed_actions(stage: str) -> frozenset[str]:
-    return ALLOWED_ACTIONS.get(stage, frozenset())
-
-
 # ---------------------------------------------------------------------------
 # 校验：把"声明写错"变成测试失败，而不是运行时惊喜
 # ---------------------------------------------------------------------------
@@ -406,8 +315,6 @@ def validate_registry() -> tuple[str, ...]:
             problems.append(f"{cap.name}: 未知 kind {cap.kind!r}")
         if cap.slot not in SLOTS:
             problems.append(f"{cap.name}: 未知 slot {cap.slot!r}")
-        if cap.status not in (STATUS_EXISTING, STATUS_PLANNED):
-            problems.append(f"{cap.name}: 未知 status {cap.status!r}")
         if cap.stage_source not in (STAGE_SOURCE_LIVE, STAGE_SOURCE_TURN_START):
             problems.append(f"{cap.name}: 未知 stage_source {cap.stage_source!r}")
         if not is_declared(cap.autonomy):
@@ -424,9 +331,6 @@ def validate_registry() -> tuple[str, ...]:
                 f"{cap.name}: (slot={cap.slot}, order={cap.order}) 与 {seen_slot_order[key]} 冲突"
             )
         seen_slot_order[key] = cap.name
-
-        if cap.status == STATUS_PLANNED and cap.enabled:
-            problems.append(f"{cap.name}: planned 能力不应 enabled（会参与执行）")
 
         if cap.enabled and cap.level is Autonomy.DANGER:
             if not cap.action_id:

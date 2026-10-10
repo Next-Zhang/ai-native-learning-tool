@@ -17,6 +17,7 @@ from datetime import date
 
 from coach.domain.cursor import fresh_progress, is_plan_finished
 from coach.domain.models import ConfirmationVerdict
+from coach.domain.profile import render_profile
 from coach.domain.plan_rules import (
     DEFAULT_WINDOW_LENGTH,
     MAX_MILESTONE_COUNT,
@@ -75,16 +76,10 @@ def unit_label(state) -> str:
 
 def generate_roadmap(state) -> dict:
     """生成路线图（不写入 state）。**失败一定有兜底**，绝不返回空。"""
-    goal = state.get("learning_goal") or "Python"
-    level = state.get("current_level") or "未知"
-    minutes = state.get("session_minutes")
-    deadline = state.get("target_date")
-    weak = [t for t in (state.get("weak_points") or []) if t]
-    profile = state.get("skill_profile") or {}
-
+    # 上下文走**统一渲染出口**：五个维度都会自动带上（含学习偏好），
+    # 不再手工挑字段 —— 那样正是"漏维度"的来源（见 domain/profile.py）。
     user_content = (
-        f"学习目标：{goal}\n当前水平：{level}\n单次可投入：{minutes} 分钟\n"
-        f"期望期限：{deadline}\n能力画像：{profile}\n薄弱点：{weak}\n"
+        f"【学习者画像】\n{render_profile(state)}\n\n"
         f"请把目标拆解成 3~5 个里程碑（由易到难，覆盖整个目标）。"
     )
 
@@ -109,23 +104,18 @@ def generate_plan(state) -> list[dict]:
     """
     length = window_length(state)
     milestone = current_milestone(state) or {}
-    goal = state.get("learning_goal") or "Python"
-    level = state.get("current_level") or "未知"
-    minutes = state.get("session_minutes")          # **单次**可投入时长
-    per_week = state.get("sessions_per_week")       # 可选：每周大约几次
-    deadline = state.get("target_date")
+    minutes = state.get("session_minutes")          # **单次**可投入时长（任务粒度硬上限）
     weak = [t for t in (state.get("weak_points") or []) if t]
-    profile = state.get("skill_profile") or {}
+    goal = state.get("learning_goal") or ""
     unit = unit_label(state)
 
+    # 同上：上下文统一走渲染出口
     user_content = (
-        f"学习目标：{goal}\n当前水平：{level}\n"
-        f"单次可投入：{minutes} 分钟（**这是硬上限**）\n"
-        f"每周大约：{per_week if per_week else '未说明'} 次\n"
-        f"期望期限：{deadline}\n能力画像：{profile}\n薄弱点：{weak}\n"
+        f"【学习者画像】\n{render_profile(state)}\n\n"
+        f"**单次可投入 {minutes} 分钟是硬上限**：每个任务的 minutes 不得超过它。\n"
         f"**当前里程碑**：{milestone.get('title', '')}"
         f"（知识点：{'、'.join(milestone.get('topics') or []) or '未指定'}）\n"
-        f"请只规划连续 {length} {unit}，且**每个任务的 minutes 不得超过单次可投入时长**。"
+        f"请只规划连续 {length} {unit}。"
     )
 
     try:

@@ -179,7 +179,7 @@ def _sample_events() -> list[dict]:
         llm(400, 70, 80, result="error:TimeoutError", stage="evaluation",
             label="evaluation_judge"),
         {"ts": "t", "session_id": "s1", "stage": "evaluation", "event": EVENT_TURN,
-         "label": "evaluation->profile_update", "model": None, "tokens_in": None,
+         "label": "evaluation->learning", "model": None, "tokens_in": None,
          "tokens_out": None, "latency_ms": None, "cost": None, "tool_calls": None,
          "result": "ok", "verdict": "pass"},
         {"ts": "t", "session_id": "s1", "stage": None, "event": EVENT_CONFIRMATION,

@@ -7,7 +7,7 @@ r"""能力注册表与三级授权的测试（架构决策 2 / 3 / 5）。
 其中两条是"把不变量固定在结构上"的关键：
 
 - **I-9**：`engagement.*` 能力**不得写任何判定字段**（趣味化不能污染验收信号）
-- **I-10 / I-6**：`ALLOWED_ACTIONS` 只含**已启用**能力，模型提议不得越界
+- **I-10**：验收档位由代码决定，模型不得降档（档位参数见 `evaluation_rules`）
 """
 
 import sys
@@ -27,16 +27,12 @@ from coach.domain.autonomy import (
     parse_autonomy,
 )
 from coach.domain.capabilities import (
-    ALLOWED_ACTIONS,
     ANY_STAGE,
     REGISTRY,
     REGISTRY_BY_NAME,
     SLOT_CLOSING,
     SLOT_INTAKE,
     SLOTS,
-    STATUS_EXISTING,
-    STATUS_PLANNED,
-    allowed_actions,
     capabilities_for,
     validate_registry,
 )
@@ -78,10 +74,14 @@ def test_registry_has_no_problems():
 
 
 def test_existing_registry_matches_turn_steps():
-    """钉住"现有能力"集合 —— 与 turn.py 的 11 步一一对应。"""
-    existing = {c.name for c in REGISTRY if c.status == STATUS_EXISTING}
-    assert existing == EXPECTED_EXISTING, (
-        f"多出={sorted(existing - EXPECTED_EXISTING)} 缺少={sorted(EXPECTED_EXISTING - existing)}"
+    """钉住能力集合 —— 与阶段流程一一对应。
+
+    v0.16 起注册表里**不再有 planned 占位**（未实现的功能不该占位），
+    因此这里直接断言全部能力。
+    """
+    names = {c.name for c in REGISTRY}
+    assert names == EXPECTED_EXISTING, (
+        f"多出={sorted(names - EXPECTED_EXISTING)} 缺少={sorted(EXPECTED_EXISTING - names)}"
     )
 
 
@@ -92,28 +92,9 @@ def test_registry_names_unique_and_indexed():
     assert set(REGISTRY_BY_NAME) == set(names)
 
 
-def test_planned_capabilities_are_disabled():
-    for cap in REGISTRY:
-        if cap.status == STATUS_PLANNED:
-            assert not cap.enabled, f"{cap.name} 是 planned，却 enabled=True"
-
-
 def test_every_stage_has_enabled_capabilities():
     for stage in ALL_STAGES:
         assert capabilities_for(stage), f"阶段 {stage} 没有任何已启用能力"
-
-
-def test_allowed_actions_covers_every_stage():
-    assert set(ALLOWED_ACTIONS) == set(ALL_STAGES)
-    for stage, names in ALLOWED_ACTIONS.items():
-        assert names, f"阶段 {stage} 的允许集为空"
-
-
-def test_allowed_actions_excludes_planned_and_disabled():
-    planned = {c.name for c in REGISTRY if not c.enabled}
-    for stage, names in ALLOWED_ACTIONS.items():
-        leaked = names & planned
-        assert not leaked, f"阶段 {stage} 的允许集泄漏了未启用能力：{sorted(leaked)}"
 
 
 def test_capabilities_for_sorts_by_slot_then_order():
@@ -137,7 +118,8 @@ def test_global_capabilities_serve_every_stage():
     assert "dialogue.coach_reply" in global_names
     assert "memory.commit_history" in global_names
     for stage in ALL_STAGES:
-        assert global_names <= allowed_actions(stage), f"阶段 {stage} 缺少全局能力"
+        served = {c.name for c in capabilities_for(stage)}
+        assert global_names <= served, f"阶段 {stage} 缺少全局能力"
 
 
 # ---------------------------------------------------------------------------
@@ -145,9 +127,14 @@ def test_global_capabilities_serve_every_stage():
 # ---------------------------------------------------------------------------
 
 def test_engagement_cannot_touch_judgement_fields():
-    """**I-9**：趣味化只作用于反馈层，不得写任何判定字段。"""
+    """**I-9**：趣味化只作用于反馈层，不得写任何判定字段。
+
+    v0.16 删除了 `engagement.*` 的**占位能力**（未实现的功能不该在注册表里占位）。
+    本用例在 S-15 落地后**必须重新生效**，因此保留断言逻辑，当前无对象时显式跳过。
+    """
     engagement = [c for c in REGISTRY if c.kind == "engagement"]
-    assert engagement, "趣味化能力应存在于注册表（planned 亦可）"
+    if not engagement:
+        raise SkipTest("S-15 未实现，暂无 engagement 能力可校验（落地后必须恢复）")
     for cap in engagement:
         overlap = set(cap.writes) & JUDGEMENT_FIELDS
         assert not overlap, f"{cap.name} 会写判定字段 {sorted(overlap)}，违反 I-9"
@@ -170,13 +157,6 @@ def test_enabled_danger_capabilities_have_registered_action():
     for cap in REGISTRY:
         if cap.enabled and cap.level is Autonomy.DANGER:
             assert cap.action_id in GATED_ACTIONS, f"{cap.name} 的 action_id 未登记"
-
-
-def test_exception_transition_is_danger_and_planned():
-    """S-14 的例外转移含"换目标"，上限必须是 danger；启用前不得参与执行。"""
-    cap = REGISTRY_BY_NAME["policy.exception_transition"]
-    assert cap.level is Autonomy.DANGER
-    assert not cap.enabled
 
 
 def test_every_enabled_capability_has_handler_and_precondition():

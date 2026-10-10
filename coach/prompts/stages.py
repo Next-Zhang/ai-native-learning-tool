@@ -1,7 +1,10 @@
 """各阶段行为准则（原 `stages.STAGE_PROMPTS`）。
 
-覆盖 `coach.domain.stages.ALL_STAGES` 的**全部 8 个阶段**（6 个主干阶段
-+ 2 个出口阶段 `review` / `completed`）。
+覆盖 `coach.domain.stages.ALL_STAGES` 的**全部 6 个阶段**（5 个主干阶段
++ 1 个出口阶段 `completed`）。
+
+v0.16 删除了 `profile_update` 与 `review` 两段提示词：前者所在阶段在同一轮内被穿过
+（提示词**不可达**），后者从未有任何转换指向它。
 
 阶段决定"教练此刻该做什么"——这是状态驱动行为的核心。
 提示词是**内容**，与 `coach.domain.stages` 的**规则**分离，便于单独评审与版本化。
@@ -16,8 +19,6 @@ from coach.domain.stages import (
     STAGE_GOAL_CLARIFICATION,
     STAGE_LEARNING,
     STAGE_PLANNING,
-    STAGE_PROFILE_UPDATE,
-    STAGE_REVIEW,
 )
 
 STAGE_PROMPTS = {
@@ -87,24 +88,8 @@ STAGE_PROMPTS = {
 - 根据证据判断：完成 / 部分完成 / 未完成，并说明掌握程度与错误类型。
 - 明确给出下一步：重试 / 补充学习 / 通过。
 - 用户说“我会了”不算通过，必须有证据。
-""",
-
-    STAGE_PROFILE_UPDATE: """
-当前阶段：**画像更新**。
-
-规则：
-- 根据刚才的验收结论，更新用户的知识点掌握程度与薄弱点。
-- 简要反馈用户当前状态与下一步安排。
-- 涉及重大变更（修改长期目标 / 大幅调整期限 / 重建整个计划 / 删除学习历史 /
-  将技能标记为“已掌握”）时，必须先征求用户确认。
-""",
-
-    STAGE_REVIEW: """
-当前阶段：**复习**。
-
-规则：
-- 针对到期复习的知识点，用快问快答或小练习检验。
-- 通过则推进到下一个复习间隔；未通过则重置间隔并补强。
+- 涉及重大变更（重建计划 / 修改长期目标 / 删除学习历史 / 标记“已掌握”）时，
+  必须先征求用户确认。
 """,
 
     STAGE_COMPLETED: """

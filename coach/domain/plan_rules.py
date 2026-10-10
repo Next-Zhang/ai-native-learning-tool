@@ -309,7 +309,9 @@ def fallback_plan(horizon: int, goal: str = "", weak_points=None,
 
 def normalize_plan_data(data, horizon: int, goal: str = "",
                         weak_points=None, session_minutes=None) -> list[dict]:
-    """清洗 LLM 产出的计划：对齐天数、重编号、限制任务数、丢弃空任务、**钳制任务时长**。"""
+    """清洗 LLM 产出的计划：对齐天数、重编号、限制任务数、丢弃空任务、**钳制任务时长**、
+    **强制可检验标准**（v0.16）。
+    """
     raw_days = data.get("days") if isinstance(data, dict) else None
 
     days: list[dict] = []
@@ -325,6 +327,11 @@ def normalize_plan_data(data, horizon: int, goal: str = "",
             task = PlanTask.model_validate(raw_task)
             if not any([task.goal, task.material, task.exercise, task.done_criteria]):
                 continue                      # 全空任务丢弃
+            if not task.done_criteria:
+                # **可检验标准是验收的锚点（PRD §2.3 硬约束）**：没有它，任务无法被验收，
+                # 闭环即断。这里**丢弃该任务**而不是编一个假的完成标准；若因此整天无任务，
+                # 下面的整体兜底会接管（兜底任务本身是带 done_criteria 的）。
+                continue
             payload = task.model_dump()
             # **任务粒度约束（代码强制）**：不得超过单次可用时长
             payload["minutes"] = clamp_task_minutes(payload.get("minutes"), session_minutes)

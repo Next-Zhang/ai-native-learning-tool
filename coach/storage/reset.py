@@ -72,10 +72,16 @@ def save_to(state: dict, state_file: Path) -> None:
 
 
 def clear_history(state: dict) -> int:
-    """清空对话历史（纯内存操作），返回清掉的条数。"""
+    """清空对话历史**与归档**（纯内存操作），返回清掉的条数。
+
+    v0.16：必须**连归档一起清** —— 否则"清空历史"只清掉窗口内的部分，
+    归档里仍留着旧对话，用户在"删除我的数据"这件事上会被误导。
+    """
     history = state.get("conversation_history") or []
-    count = len(history)
+    archive = state.get("conversation_archive") or []
+    count = len(history) + len(archive)
     state["conversation_history"] = []
+    state["conversation_archive"] = []
     return count
 
 

@@ -34,7 +34,7 @@ def ensure_plan(state) -> bool:
     if progress.get("plan"):
         return False
 
-    goal = state.get("learning_goal") or "Python"
+    goal = state.get("learning_goal") or ""   # 守卫 profile_complete 保证非空；不再默认 "Python"
     level = state.get("current_level") or "未知"
     minutes = state.get("session_minutes")
     deadline = state.get("target_date")

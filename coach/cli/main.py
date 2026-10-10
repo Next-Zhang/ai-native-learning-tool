@@ -4,6 +4,7 @@
 业务流程一律不在这里——那是 `coach.orchestration.turn` 的职责。
 """
 
+from coach import __version__
 from coach.config import API_KEY_ENV, get_settings
 from coach.domain.plan_rules import current_milestone
 from coach.domain.profile_rules import OPTIONAL_PROFILE_FIELDS, PROFILE_FIELDS
@@ -233,7 +234,7 @@ def main() -> int:
     # 知识库检索开关：当前**默认关闭**（先不调用 RAG）
     use_rag = False
 
-    print("AI Learning Coach 已启动")
+    print(f"AI Learning Coach v{__version__} 已启动")
     print("输入 exit 退出程序")
     print("知识库检索默认关闭；输入 /rag on 可临时开启（/rag off 关闭）")
     print("测试用：/reset 清空对话历史（保留画像与进度）；/reset all 完全重置（两者都会先请你确认）")

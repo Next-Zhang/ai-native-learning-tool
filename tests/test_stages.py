@@ -27,7 +27,6 @@ from coach.domain.stages import (
     STAGE_LABELS,
     STAGE_LEARNING,
     STAGE_PLANNING,
-    STAGE_PROFILE_UPDATE,
     TRANSITIONS,
     blocked_reason,
     can_advance,
@@ -79,7 +78,8 @@ READY_CASES = [
         {"today_task": {"goal": "练习列表"}, "pending_submission": "我的答案"},
         STAGE_EVALUATION,
     ),
-    (STAGE_EVALUATION, {"latest_result": {"completion": "完成"}}, STAGE_PROFILE_UPDATE),
+    # v0.16：evaluation → learning 是直接回路，守卫是"验收已应用到画像"
+    (STAGE_EVALUATION, {"latest_result_applied": True}, STAGE_LEARNING),
 ]
 
 
@@ -88,7 +88,7 @@ READY_CASES = [
 # ---------------------------------------------------------------------------
 
 def test_chain_is_linear():
-    """主干必须是一条线性链：goal → assessment → … → profile_update。
+    """主干必须是一条线性链：goal → assessment → … → evaluation。
 
     契约钉桩：只断言 `TRANSITIONS` / `STAGES` 的形状，**只防误删、不证明行为**
     （守卫是否真的拦住/放行，由 `test_guards_*` 那几条负责）。
@@ -339,7 +339,7 @@ def test_guard_plan_confirmed_rejects_string_false():
 
 def test_guard_update_applied_rejects_string_false():
     """同理：`"latest_result_applied": "false"` 不得让画像未更新就回到学习任务。"""
-    state = {"current_stage": STAGE_PROFILE_UPDATE, "latest_result_applied": "false"}
+    state = {"current_stage": STAGE_EVALUATION, "latest_result_applied": "false"}
     assert try_advance(state) is None
 
     state["latest_result_applied"] = "true"

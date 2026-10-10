@@ -2,7 +2,7 @@
 
 骨架 vs 能力
 ------------
-一轮里有 **4 个状态机推进点**（原 `turn.py` 的 ⑤ ⑧ ⑨）。它们的位置属于
+一轮里有 **3 个状态机推进点**（原 `turn.py` 的 ⑤ ⑧ ⑨）。它们的位置属于
 **状态机契约（I-1）**，不可让渡，因此固定在骨架里：
 
 ```
@@ -12,7 +12,7 @@ for slot in SLOTS:                     # ← 骨架（改它 = 改流程）
     if slot == stage_pre: 推进 #1       # ← 骨架推进点
 ```
 
-推进 #2（测评收尾）与 #3/#4（应用判定）是**条件性**的，由对应能力自己负责
+推进 #2（测评收尾）与 #3（应用判定）是**条件性**的，由对应能力自己负责
 （它们是那两个能力的语义的一部分），因此写在 handler 里。
 
 行为等价性
@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from coach.domain.assessment_rules import finalize, is_finished
-from coach.domain.autonomy import Autonomy, ensure_action_registered, ensure_allowed
+from coach.domain.autonomy import ensure_action_registered
 from coach.domain.capabilities import (
     REGISTRY,
     SLOT_STAGE_PRE,
@@ -55,7 +55,6 @@ __all__ = [
     "TurnResult",
     "execute_slots",
     "missing_handlers",
-    "require_action",
 ]
 
 
@@ -146,26 +145,6 @@ class MatrixSelector:
 
     def select(self, ctx: TurnContext, slot: str) -> tuple[Capability, ...]:
         return select_capabilities(ctx.stage, ctx.stage_before, slot=slot)
-
-    def candidates(self, ctx: TurnContext) -> tuple[Capability, ...]:
-        """**本轮允许的动作集**（不限定槽位）—— 将来 `HybridSelector` 用它校验提议（I-6）。"""
-        return select_capabilities(ctx.stage, ctx.stage_before)
-
-
-# ---------------------------------------------------------------------------
-# 权限
-# ---------------------------------------------------------------------------
-
-def require_action(cap: Autonomy | Capability | str, needed: Autonomy | str, *,
-                   action_id: str | None = None):
-    """能力在执行某个动作前调用（供将来 danger 级能力使用）。
-
-    越级 → `AutonomyViolation`；danger 级未登记 → `UnknownActionError`（I-4）。
-    """
-    ceiling = cap.autonomy if isinstance(cap, Capability) else cap
-    subject = cap.name if isinstance(cap, Capability) else ""
-    return ensure_allowed(ceiling, needed, action_id=action_id, subject=subject)
-
 
 def _ensure_executable(cap: Capability) -> None:
     """执行前的固定检查：danger 级能力必须带**已登记**的 action_id（I-4）。"""
@@ -290,18 +269,53 @@ def _h_assessment_finalize(ctx: TurnContext) -> None:
 
 
 def _h_profile_apply(ctx: TurnContext) -> None:
-    _advance(ctx)                      # 骨架推进点 #3：evaluation -> profile_update
+    """应用验收结论，并推进 evaluation → learning。
+
+    **v0.16**：原先是"推进 #3 → 应用 → 推进 #4"两步（经过 `profile_update` 阶段）。
+    该阶段已删除，现在应用完再推进一步即可；守卫 `_guard_update_applied`
+    保证"没应用完就不会推进"。
+    """
     ctx.result.update_summary = evaluation.apply_update(ctx.state)
-    _advance(ctx)                      # 骨架推进点 #4：profile_update -> learning
+    _advance(ctx)                      # 骨架推进点 #3：evaluation -> learning
 
 
 def _h_window_finish_check(ctx: TurnContext) -> None:
     ctx.result.plan_finished = is_plan_finished(ctx.state)
 
 
+#: 注入模型的对话窗口大小（S-09）；超出部分进 `conversation_archive`。
+CONVERSATION_WINDOW = 8
+
+#: 归档上限（只控制文件增长；用户可用 `/reset` 清空）
+CONVERSATION_ARCHIVE_LIMIT = 500
+
+
+def trim_history(state) -> None:
+    """把超出窗口的对话移进归档 —— **不丢信息，只控制注入量**（S-09）。
+
+    这是 v0.16 里"记忆"唯一真实的改动：以前每轮都把**全量** history 发给模型，
+    成本与暴露面随轮数线性增长（PRD X-09 / X-11）。
+    不做"阶段小结"（那要多一次模型调用），也不拆存储文件（数据量未到瓶颈）。
+    """
+    history = state.get("conversation_history") or []
+    if len(history) <= CONVERSATION_WINDOW:
+        return
+    overflow = history[:-CONVERSATION_WINDOW]
+    state["conversation_history"] = history[-CONVERSATION_WINDOW:]
+
+    archive = state.get("conversation_archive")
+    if not isinstance(archive, list):
+        archive = []
+        state["conversation_archive"] = archive
+    archive.extend(overflow)
+    if len(archive) > CONVERSATION_ARCHIVE_LIMIT:
+        del archive[:-CONVERSATION_ARCHIVE_LIMIT]
+
+
 def _h_commit_history(ctx: TurnContext) -> None:
     ctx.state["conversation_history"].append({"role": "user", "content": ctx.user_input})
     ctx.state["conversation_history"].append({"role": "assistant", "content": ctx.answer})
+    trim_history(ctx.state)
     save_state(ctx.state)
 
 
