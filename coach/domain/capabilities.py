@@ -163,10 +163,11 @@ REGISTRY: tuple[Capability, ...] = (
     Capability(
         name="planning.daily_task_build",
         kind="planning", slot=SLOT_STAGE_PRE, stages=("learning",),
-        reads=("current_window", "plan_progress", "today_task"),
-        writes=("today_task", "plan_progress"),
+        reads=("current_window", "plan_progress", "today_task", "session_seq"),
+        writes=("today_task", "plan_progress", "session_seq"),
         calls_llm=False, autonomy=Autonomy.WRITE.value, order=50,
-        description="按游标取下一个任务（纯代码，不调模型）",
+        description=("按游标取下一个任务（纯代码，不调模型）；**跨天时顺带把**"
+                     "**session_seq 前进一位**（v0.18，见 memory-design §5.4）"),
     ),
     Capability(
         name="evaluation.judge",
@@ -203,17 +204,18 @@ REGISTRY: tuple[Capability, ...] = (
     Capability(
         name="memory.assessment_finalize",
         kind="memory", slot=SLOT_AFTER_DIALOGUE, stages=("assessment",),
-        reads=("assessment_progress",),
-        writes=("skill_profile", "weak_points", "assessment_progress"),
+        reads=("assessment_progress", "evidence"),
+        writes=("evidence", "skill_profile", "weak_points", "assessment_progress"),
         calls_llm=False, autonomy=Autonomy.WRITE.value, order=100,
-        description="测评收尾：纯代码聚合出能力画像与薄弱点",
+        description=("测评收尾：先把本次测评写成**证据**，再由证据**派生**能力画像与薄弱点"
+                     "（v0.18，见 memory-design §5.2）"),
     ),
     Capability(
         name="memory.profile_apply",
         kind="memory", slot=SLOT_EVALUATION_APPLY, stages=("evaluation",),
-        reads=("latest_result",),
-        writes=("skill_profile", "weak_points", "plan_progress",
-                "latest_result_applied", "today_task", "pending_submission"),
+        reads=("latest_result", "evidence", "session_seq"),
+        writes=("evidence", "skill_profile", "weak_points", "plan_progress",
+                "latest_result_applied", "today_task", "pending_submission", "session_seq"),
         calls_llm=False, autonomy=Autonomy.WRITE.value, order=110,
         description=(
             "应用验收结论：平滑更新画像与游标，并推进 evaluation→learning"
@@ -257,7 +259,8 @@ REGISTRY: tuple[Capability, ...] = (
         name="memory.condense_cycle",
         kind="memory", slot=SLOT_CLOSING, stages=("learning",),
         reads=("plan_progress", "evidence", "session_seq"),
-        writes=("session_summaries", "session_records", "condensed_through_seq"),
+        writes=("session_summaries", "session_records", "condensed_through_seq",
+                "rolling_summary"),              # 定稿后滚动摘要要清空
         calls_llm=True, autonomy=Autonomy.WRITE.value, order=115,
         description=("[v0.18] L2 定稿摘要：每次单次学习结束压一条"
                      "（确定性骨架 + 模型润色；模型失败只留骨架）"),

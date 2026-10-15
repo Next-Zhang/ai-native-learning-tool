@@ -5,12 +5,13 @@
 2. describe_progress()    一行进度摘要，用于终端展示
 3. detect_submission()    用 LLM 判断用户这句话是否提交了可验收的结果
 
-安全策略：提交判定失败（无 Key／网络异常）时返回 None，**保持 learning 继续对话**，
-绝不把普通提问误当成提交。
+安全策略：提交判定失败（无 Key／网络异常）时返回 `ok=False`，**保持 learning 继续对话**，
+绝不把普通提问误当成提交。判定点契约见 `coach/domain/perception.py`（**F1**）。
 """
 
 from coach.domain.cursor import get_progress
 from coach.domain.models import SubmissionVerdict
+from coach.domain.perception import KIND_SUBMISSION, PerceptionResult
 from coach.llm import client
 from coach.prompts.tasks import SUBMISSION_SYSTEM_PROMPT
 from coach.services import to_bool
@@ -68,17 +69,19 @@ def describe_progress(state) -> str:
             f"第 {progress['task']} 个任务（已完成 {len(progress.get('completed') or [])} 个）")
 
 
-def detect_submission(state, user_input: str) -> SubmissionVerdict | None:
-    """判断用户是否提交了结果；是则写入 state["pending_submission"]。
+def detect_submission(state, user_input: str) -> PerceptionResult:
+    """判断用户是否提交了结果；是则写入 `state["pending_submission"]`。
 
-    失败（无 Key／网络异常）返回 None，并保持 learning 状态。
+    **F1 判定点**：`kind = submission`。三种"没有判定结果"的情形现在靠 `error` 区分：
+    `no_task` / `already_pending` / 具体异常 —— 改造前三者都是同一个 None。
     """
     task = state.get("today_task") or {}
     if not task:
-        return None
+        return PerceptionResult.failure(KIND_SUBMISSION, error="no_task")
 
     if state.get("pending_submission"):
-        return None                      # 已经有一个待验收提交，不重复覆盖
+        # 已经有一个待验收提交，不重复覆盖
+        return PerceptionResult.failure(KIND_SUBMISSION, error="already_pending")
 
     user_content = (
         f"【今日任务】{task.get('goal', '')}\n"
@@ -97,7 +100,8 @@ def detect_submission(state, user_input: str) -> SubmissionVerdict | None:
         )
     except Exception as exc:                  # noqa: BLE001 —— 判定失败就继续对话
         print(f"[提交判定失败，保持学习中] {type(exc).__name__}: {exc}")
-        return None
+        return PerceptionResult.failure(KIND_SUBMISSION,
+                                        error=f"{type(exc).__name__}: {exc}")
 
     if verdict.is_submission:
         state["pending_submission"] = {
@@ -106,4 +110,4 @@ def detect_submission(state, user_input: str) -> SubmissionVerdict | None:
             "day": task.get("day"),
             "task": task.get("task"),
         }
-    return verdict
+    return PerceptionResult.validated(KIND_SUBMISSION, verdict)

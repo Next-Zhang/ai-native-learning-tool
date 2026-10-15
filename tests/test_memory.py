@@ -17,6 +17,7 @@ r"""记忆管理（v0.18）的回归测试。
 
 import copy
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -47,7 +48,10 @@ from coach.domain.memory import (                                     # noqa: E4
     upsert_session_record,
 )
 from coach.domain.state_schema import DEFAULT_STATE, ensure_keys         # noqa: E402
+from coach.llm import client as llm_client                              # noqa: E402
 from coach.metrics import recorder as metrics                          # noqa: E402
+from coach.orchestration import executor as executor_module             # noqa: E402
+from coach.orchestration.turn import run_turn                           # noqa: E402
 
 # 本模块不采集指标（避免测试写真实 data/metrics/）
 metrics.disable()
@@ -549,10 +553,12 @@ def test_summarize_cycle_puts_the_deterministic_skeleton_first():
     original = llm_client.json_call
     llm_client.json_call = lambda *a, **kw: {"summary": "用户练了分组聚合，卡在多列取值。"}
     try:
-        text = memory_service.summarize_cycle(state, 1)
+        summarized = memory_service.summarize_cycle(state, 1)
     finally:
         llm_client.json_call = original
 
+    assert summarized.ok, "模型有回复时必须报 ok=True（F1）"
+    text = summarized.payload["summary"]
     assert text.startswith("[单次学习 1]"), "骨架必须在前 —— 它才是事实来源"
     assert "groupby 聚合" in text.split("【补充】")[0], "知识点名必须来自代码"
     assert "【补充】" in text and "卡在多列取值" in text
@@ -571,10 +577,13 @@ def test_summarize_cycle_falls_back_when_the_model_fails():
 
     llm_client.json_call = boom
     try:
-        text = memory_service.summarize_cycle(state, 1)
+        summarized = memory_service.summarize_cycle(state, 1)
     finally:
         llm_client.json_call = original
 
+    assert summarized.ok is False, "走了兜底就必须报 ok=False（F1）"
+    assert summarized.error, "失败原因要能读到"
+    text = summarized.payload["summary"]
     assert text.strip(), "兜底摘要不能是空的 —— 记忆不能空着"
     assert "groupby 聚合" in text
     assert "【补充】" not in text
@@ -589,12 +598,13 @@ def test_summarize_progress_keeps_the_previous_summary_on_failure():
     original = llm_client.json_call
     llm_client.json_call = lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("boom"))
     try:
-        text = memory_service.summarize_progress(
+        summarized = memory_service.summarize_progress(
             state, [{"role": "user", "content": "我们先看看数据"}], "此前的进展")
     finally:
         llm_client.json_call = original
 
-    assert text == "此前的进展"
+    assert summarized.ok is False
+    assert summarized.payload["summary"] == "此前的进展"
 
 
 def test_memory_is_injected_before_the_authoritative_state():
@@ -630,6 +640,120 @@ def test_memory_is_injected_before_the_authoritative_state():
     assert idx_rolling < idx_known, "记忆摘要必须排在权威状态之前"
     assert idx_history < idx_known
     assert captured["messages"][-1]["content"] == "继续", "用户输入必须在最后"
+
+
+# ---------------------------------------------------------------------------
+# 14) **跨层集成**：走真实 run_turn 的跨天 → L2 定稿
+#
+# 编排层原先只有 5% 覆盖（见 docs/test-audit.md），而 X-16 / X-17 两个真实缺陷
+# 正出在这一层。这条用例一次覆盖四层：
+#   cursor（跨天进位）→ memory（L2 压缩）→ executor（槽位与顺序）→ capabilities（登记与前置条件）
+# ---------------------------------------------------------------------------
+
+@contextmanager
+def _no_save():
+    """`run_turn` 会经由 `executor.save_state` 落盘。
+
+    测试**绝不能**写真实的 `data/user_state.json`（那是用户的真实学习数据）。
+    与 `tests/test_dialogue.py` 的 `_no_save` 同法：patch 在 `executor` 上，
+    因为它用的是 `from ... import save_state`（直接绑定）。
+    """
+    original = executor_module.save_state
+    executor_module.save_state = lambda state: None
+    try:
+        yield
+    finally:
+        executor_module.save_state = original
+
+
+@contextmanager
+def _stub_model(summary="模型润色的一句话"):
+    """打桩两个模型出口：不联网，但**走真实的 handler 与编排路径**。
+
+    按系统提示词的特征词分派（提示词集中在 `coach/prompts` 定义）。
+    """
+    original_json = llm_client.json_call
+    original_chat = llm_client.chat
+
+    def fake_json_call(system_prompt, user_content, settings=None, *, label=None):
+        sp = system_prompt or ""
+        if "验收员" in sp:                      # EVALUATION_JUDGE_SYSTEM_PROMPT
+            return {"completion": "completed", "error_types": ["边界情况遗漏"],
+                    "next_action": "pass", "mastery": 1.0,
+                    "feedback": "做得好", "reason": "符合完成标准"}
+        if "提交" in sp:                        # SUBMISSION_SYSTEM_PROMPT
+            return {"is_submission": True, "content": "代码与运行结果", "reason": "有产出"}
+        if "摘要" in sp:                        # CONDENSE_*_SYSTEM_PROMPT
+            return {"summary": summary}
+        return {}
+
+    llm_client.json_call = fake_json_call
+    llm_client.chat = lambda messages, **kwargs: "（教练回复）"
+    try:
+        yield
+    finally:
+        llm_client.json_call = original_json
+        llm_client.chat = original_chat
+
+
+def _learning_state() -> dict:
+    """学习阶段的完整上下文（窗口：第一天 2 个任务、第二天 1 个任务）。"""
+    state = copy.deepcopy(DEFAULT_STATE)
+    state.update({
+        "learning_goal": "用 pandas 做销售分析",
+        "current_level": "会一点 Python",
+        "session_minutes": 30,
+        "target_date": "2026-11-01",
+        "sessions_per_week": 3,
+        "current_stage": "learning",
+        "plan_confirmed": True,
+        "roadmap": {"current_milestone": "M1",
+                    "milestones": [{"id": "M1", "title": "基础", "topics": ["pandas"],
+                                    "sessions_est": 3, "status": "active"}]},
+        "current_window": _window(),
+    })
+    return state
+
+
+def test_crossing_a_day_boundary_produces_exactly_one_cycle_summary():
+    """跨天 = 跨次学习 → **恰好**定稿一条摘要，且之后的轮次不再重复。"""
+    state = _learning_state()
+
+    with _no_save(), _stub_model():
+        for _ in range(12):
+            run_turn(state, "我提交了：代码与运行结果")
+            if session_summaries(state):
+                break
+
+        # 跨天必须让 session_seq 前进 —— 否则"待复验"永远不会触发
+        assert state["session_seq"] == 2, f"session_seq = {state['session_seq']}"
+        assert state["plan_progress"]["day"] == 2
+
+        # L2 幂等：再多跑几轮也不能多出摘要
+        for _ in range(6):
+            run_turn(state, "我提交了：代码与运行结果")
+
+    summaries = session_summaries(state)
+    assert len(summaries) == 1, f"定稿了 {len(summaries)} 条，应当只有 1 条"
+    assert summaries[0]["seq"] == 1
+    assert state["condensed_through_seq"] == 1
+
+    # 摘要 = 确定性骨架在前 + 模型润色在后（**I-14** 的结构保障）
+    text = summaries[0]["text"]
+    assert text.startswith("[单次学习 1]"), text
+    assert "第一天" in text.split("【补充】")[0], "知识点名必须由代码给出"
+    assert "【补充】" in text
+
+    # 结构化记录同步落地
+    records = session_records(state)
+    assert len(records) == 1
+    assert records[0]["tasks_done"] == ["1-1", "1-2"]
+    assert records[0]["topics"] == ["第一天"]
+
+    # 证据链跟着判定走，且**错误类型被留存**（治忘-5）
+    assert state["evidence"], "判定必须留下证据"
+    assert any(entry["error_type"] for entries in state["evidence"].values()
+               for entry in entries)
 
 
 # ---------------------------------------------------------------------------

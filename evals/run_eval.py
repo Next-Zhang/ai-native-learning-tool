@@ -319,14 +319,14 @@ def run_case(case) -> dict:
                 "finished": False,
             }
         }
-        record = assessment.record_answer(
+        judged = assessment.record_answer(
             state, case["input"]["user_answer"], case["input"]["coach_reply"]
         )
-        if record is None:
-            raise CaseError("record_answer 返回 None")
-        if record.note == "判定调用失败":
-            raise CaseError("判定调用失败（已按 missing 兜底，不计入一致率）")
-        return {"verdict": record.verdict}
+        if not judged.payload:
+            raise CaseError(f"record_answer 没有判定结果：{judged.error}")
+        if not judged.ok:
+            raise CaseError(f"判定调用失败（已按 missing 兜底，不计入一致率）：{judged.error}")
+        return {"verdict": judged.payload["verdict"]}
 
     if judge == "evaluation_completion":
         from coach.services import evaluation
@@ -335,38 +335,42 @@ def run_case(case) -> dict:
             "today_task": _task_of(case),
             "pending_submission": {"content": case["input"]["submission"].get("content", "")},
         }
-        result = evaluation.evaluate(state)
-        if result is None:
-            raise CaseError("evaluate 返回 None（判定失败）")
-        return {"completion": result.completion, "next_action": result.next_action}
+        judged = evaluation.evaluate(state)
+        if not judged.ok:
+            raise CaseError(f"evaluate 没有判定结果：{judged.error}")
+        return {"completion": judged.payload["completion"],
+                "next_action": judged.payload["next_action"]}
 
     if judge == "submission_detect":
         from coach.services import daily_task
 
         state = {"today_task": _task_of(case)}
-        verdict = daily_task.detect_submission(state, case["input"]["user_input"])
-        if verdict is None:
-            raise CaseError("detect_submission 返回 None（判定失败）")
-        return {"is_submission": verdict.is_submission}
+        judged = daily_task.detect_submission(state, case["input"]["user_input"])
+        if not judged.ok:
+            raise CaseError(f"detect_submission 判定失败：{judged.error}")
+        return {"is_submission": judged.payload["is_submission"]}
 
     if judge == "plan_confirm":
         from coach.services import planning
 
         state = {"current_window": case["input"]["plan"], "plan_confirmed": False}
-        verdict = planning.confirm_plan(state, case["input"]["user_input"])
-        if verdict is None:
-            raise CaseError("confirm_plan 返回 None（判定失败）")
-        return {"confirmed": verdict.confirmed}
+        judged = planning.confirm_plan(state, case["input"]["user_input"])
+        if not judged.ok:
+            raise CaseError(f"confirm_plan 判定失败：{judged.error}")
+        return {"confirmed": judged.payload["confirmed"]}
 
     if judge == "profile_extract":
         from coach.services import profile as profile_service
 
-        profile = profile_service.extract_profile(case["input"]["text"])
+        judged = profile_service.extract_profile(case["input"]["text"])
+        if not judged.ok:
+            raise CaseError(f"extract_profile 判定失败：{judged.error}")
+        extracted = judged.payload
         return {
-            "learning_goal": profile.learning_goal,
-            "current_level": profile.current_level,
-            "session_minutes": profile.session_minutes,
-            "target_date": profile.target_date,
+            "learning_goal": extracted["learning_goal"],
+            "current_level": extracted["current_level"],
+            "session_minutes": extracted["session_minutes"],
+            "target_date": extracted["target_date"],
         }
 
     raise CaseError(f"未实现的 judge：{judge}")

@@ -369,7 +369,7 @@ def test_confirm_plan_keeps_waiting_without_llm():
             plan_confirmed=False,
         )
         verdict = confirm_plan(state, "可以，开始吧")
-        assert verdict is None
+        assert verdict.ok is False, "判定失败必须如实报 ok=False"
         assert state["plan_confirmed"] is False
     finally:
         set_settings(original)
@@ -415,15 +415,15 @@ def test_live_confirmation_judgement():
     # 明确同意 -> 确认
     state = _planning_state(current_window=copy.deepcopy(plan), plan_confirmed=False)
     verdict = confirm_plan(state, "可以，就按这个计划开始吧")
-    print("        同意判定:", verdict)
-    assert verdict is not None and verdict.confirmed is True
+    print("        同意判定:", verdict.payload)
+    assert verdict.ok and verdict.payload["confirmed"] is True
     assert state["plan_confirmed"] is True
 
     # 要求修改 -> 不确认
     state2 = _planning_state(current_window=copy.deepcopy(plan), plan_confirmed=False)
     verdict2 = confirm_plan(state2, "第 3 天能不能简单一点？我怕跟不上")
-    print("        修改判定:", verdict2)
-    assert verdict2 is not None and verdict2.confirmed is False
+    print("        修改判定:", verdict2.payload)
+    assert verdict2.ok and verdict2.payload["confirmed"] is False
     assert state2["plan_confirmed"] is False
 
 
@@ -534,7 +534,7 @@ def test_confirm_plan_rejects_string_false():
 
         verdict = confirm_plan(state, "我再想想吧")
 
-        assert verdict is not None and verdict.confirmed is False
+        assert verdict.ok and verdict.payload["confirmed"] is False
         assert state["plan_confirmed"] is False, "字符串 false 不得置为已确认"
     finally:
         llm_client.json_call = original

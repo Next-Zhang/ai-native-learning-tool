@@ -5,13 +5,15 @@
 2. 一致性守卫      由 `domain.models.EvaluationResult` 强制（掌握度由完成度推导；未完成不许 pass）
 3. apply_update()  **代码侧**更新画像（新旧平均）与薄弱点，并决定"推进游标 / 重做当前任务"
 
-判定失败（无 Key／网络异常／返回结构非法）返回 None，保持 evaluation 状态，绝不误推进。
+判定失败（无 Key／网络异常／返回结构非法）返回 `ok=False`，保持 evaluation 状态，
+绝不误推进（**P-1 / P-4**）。判定点契约见 `coach/domain/perception.py`（**F1**）。
 """
 
 from coach.domain.assessment_rules import derive_weak_points
 from coach.domain.cursor import get_progress, mark_task_done
 from coach.domain.memory import SOURCE_EVALUATION, derive_profile, record_evidence
 from coach.domain.models import EvaluationResult
+from coach.domain.perception import KIND_EVALUATION_VERDICT, PerceptionResult
 from coach.llm import client
 from coach.prompts.tasks import EVALUATION_JUDGE_SYSTEM_PROMPT
 
@@ -22,12 +24,16 @@ __all__ = [
 ]
 
 
-def evaluate(state) -> EvaluationResult | None:
-    """对 pending_submission 做结构化判定；成功则写入 latest_result。"""
+def evaluate(state) -> PerceptionResult:
+    """对 pending_submission 做结构化判定；**成功才**写入 `latest_result`。
+
+    **F1 判定点**：`kind = evaluation_verdict`。失败时**不写任何判定性字段**（P-1），
+    保持 evaluation 阶段（P-4）。
+    """
     task = state.get("today_task") or {}
     submission = state.get("pending_submission") or {}
     if not task or not submission.get("content"):
-        return None
+        return PerceptionResult.failure(KIND_EVALUATION_VERDICT, error="no_submission")
 
     user_content = (
         f"【今日任务】{task.get('goal', '')}\n"
@@ -57,11 +63,12 @@ def evaluate(state) -> EvaluationResult | None:
         )
     except Exception as exc:                  # noqa: BLE001 —— 判定失败保持 evaluation
         print(f"[验收判定失败，保持在结果验收] {type(exc).__name__}: {exc}")
-        return None
+        return PerceptionResult.failure(KIND_EVALUATION_VERDICT,
+                                        error=f"{type(exc).__name__}: {exc}")
 
     state["latest_result"] = result.model_dump()
     state["latest_result_applied"] = False
-    return result
+    return PerceptionResult.validated(KIND_EVALUATION_VERDICT, result)
 
 
 def _task_id(result) -> str:

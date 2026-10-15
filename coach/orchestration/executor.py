@@ -28,6 +28,7 @@ for slot in SLOTS:                     # ← 骨架（改它 = 改流程）
 ⑥ 用推进后的阶段。注册表的 `stage_source` 精确表达了这一点（`live` / `turn_start`）。
 """
 
+import copy
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -42,9 +43,15 @@ from coach.domain.capabilities import (
 )
 from coach.domain import memory
 from coach.domain.cursor import build_today_task, is_plan_finished
+from coach.domain.guardrails import (
+    GuardrailContext,
+    run_guardrails,
+    upcoming_task_goals,
+)
 from coach.domain.profile_rules import merge_profile, profile_complete
 from coach.domain.stages import try_advance
 from coach.metrics import recorder as metrics
+from coach.observability import trace as trace_mod
 from coach.services import assessment, daily_task, evaluation, planning, profile
 from coach.services.memory import summarize_cycle, summarize_progress
 from coach.services.coach import chat_with_coach
@@ -85,20 +92,29 @@ class TurnResult:
     # 测评
     assessment_plan_created: bool = False
     assessment_topics: list[str] = field(default_factory=list)
-    record: Any = None
+    record: dict | None = None                 # 感知契约的 payload（F1）
     summary: dict | None = None
 
     # 计划
     plan_created: bool = False
-    confirmation: Any = None
+    confirmation: dict | None = None           # 感知契约的 payload（F1）
 
     # 学习任务
     task_created: dict | None = None
-    submission: Any = None
+    submission: dict | None = None             # 感知契约的 payload（F1）
 
     # 验收与画像更新
-    evaluation_result: Any = None
+    evaluation_result: dict | None = None      # 感知契约的 payload（F1）
     update_summary: dict | None = None
+
+    # **F1 降级记录**：某个判定点 `ok=False` 时，把 `kind:原因` 记在这里。
+    # 界面层可以据此提示"这轮有个判定没跑成，结果可能不完整" ——
+    # 改造前这类失败**完全不可见**（只有一个与正常值无法区分的空结果）。
+    perception_errors: list[str] = field(default_factory=list)
+
+    # **F4 内容层护栏命中**：模型写了越界内容、被代码改掉时记在这里。
+    # 改造前"模型有没有抢答"只能靠人逐条读回复发现。
+    guardrail_hits: list[str] = field(default_factory=list)
 
     # 本窗口计划是否已全部完成
     plan_finished: bool = False
@@ -162,8 +178,40 @@ def _advance(ctx: TurnContext) -> bool:
     before = ctx.stage
     if try_advance(ctx.state):
         ctx.result.transitions.append((before, ctx.stage))
+        trace = trace_mod.current()          # F5：推进点是单轮因果链里最该被看见的一步
+        if trace is not None:
+            trace.transition(before, ctx.stage)
         return True
     return False
+
+
+# ---------------------------------------------------------------------------
+# 单轮因果链的探针（**F5**）：只回答"哪个键变了"，不记录具体值（trace 不能膨胀）
+# ---------------------------------------------------------------------------
+
+def _note_degraded(ctx: TurnContext, result) -> None:
+    """**F1**：把一个 `ok=False` 的判定点记进 `TurnResult`，让界面层能如实提示。
+
+    改造前这类失败**完全不可见** —— 返回值与正常值无法区分，用户与开发者都看不出
+    "这轮其实有个判定没跑成"。
+    """
+    if not result.ok:
+        ctx.result.perception_errors.append(f"{result.kind}:{result.error}")
+
+
+def _snapshot(state: dict) -> dict:
+    """handler 执行前的 state 深拷贝。
+
+    只在 trace 打开时才调用（`"采集失败/未开启不影响主流程"`"的同一纪律：
+    关掉 trace 就是**零开销**）。state 约 25 KB，一轮十几次深拷贝是亚毫秒级。
+    """
+    return copy.deepcopy(state)
+
+
+def _diff(before: dict, after: dict) -> dict:
+    """哪些**顶层键**被改过（含新增/删除）。与 F7 契约测试同一粒度。"""
+    keys = set(before) | set(after)
+    return {key: after.get(key) for key in keys if before.get(key) != after.get(key)}
 
 
 # ---------------------------------------------------------------------------
@@ -216,11 +264,17 @@ PRECONDITIONS: dict[str, Callable[[TurnContext], bool]] = {
 # ---------------------------------------------------------------------------
 
 def _h_profile_extract(ctx: TurnContext) -> None:
-    ctx.result.updated_fields = merge_profile(ctx.state, profile.extract_profile(ctx.user_input))
+    # **F1**：感知契约统一为 `PerceptionResult`；写进 state 的永远是 `payload`（dict），
+    # 结果对象本身**绝不进 state**（P-3 的同一条纪律）。
+    extracted = profile.extract_profile(ctx.user_input)
+    _note_degraded(ctx, extracted)
+    ctx.result.updated_fields = merge_profile(ctx.state, extracted.payload)
 
 
 def _h_plan_confirm(ctx: TurnContext) -> None:
-    ctx.result.confirmation = planning.confirm_plan(ctx.state, ctx.user_input)
+    confirmed = planning.confirm_plan(ctx.state, ctx.user_input)
+    _note_degraded(ctx, confirmed)
+    ctx.result.confirmation = confirmed.payload if confirmed.ok else None
 
 
 def _h_plan_generate(ctx: TurnContext) -> None:
@@ -233,7 +287,9 @@ def _h_window_roll(ctx: TurnContext) -> None:
 
 
 def _h_submission_detect(ctx: TurnContext) -> None:
-    ctx.result.submission = daily_task.detect_submission(ctx.state, ctx.user_input)
+    detected = daily_task.detect_submission(ctx.state, ctx.user_input)
+    _note_degraded(ctx, detected)
+    ctx.result.submission = detected.payload if detected.ok else None
 
 
 def _h_daily_task_build(ctx: TurnContext) -> None:
@@ -241,7 +297,9 @@ def _h_daily_task_build(ctx: TurnContext) -> None:
 
 
 def _h_judge(ctx: TurnContext) -> None:
-    ctx.result.evaluation_result = evaluation.evaluate(ctx.state)
+    judged = evaluation.evaluate(ctx.state)
+    _note_degraded(ctx, judged)
+    ctx.result.evaluation_result = judged.payload if judged.ok else None
 
 
 def _h_assessment_outline(ctx: TurnContext) -> None:
@@ -261,13 +319,33 @@ def _h_coach_reply(ctx: TurnContext) -> None:
         state=ctx.state,
         stage=ctx.stage_before,
     )
-    ctx.answer = answer
-    ctx.result.answer = answer
+    # **F4 内容层护栏**：提示词里的禁令不是强制 —— 这里由代码把关。
+    report = run_guardrails(
+        answer,
+        GuardrailContext(
+            stage=ctx.stage_before,
+            kind="reply",
+            today_task_goal=str((ctx.state.get("today_task") or {}).get("goal") or ""),
+            upcoming_task_goals=upcoming_task_goals(ctx.state),
+        ),
+    )
+
+    ctx.answer = report.text
+    ctx.result.answer = report.text
     ctx.result.sources = sources
+    ctx.result.guardrail_hits.extend(report.hits)
+    if report.hits:
+        hit_trace = trace_mod.current()
+        if hit_trace is not None:
+            hit_trace.note("guardrails: " + "、".join(report.hits))
 
 
 def _h_assessment_verdict(ctx: TurnContext) -> None:
-    ctx.result.record = assessment.record_answer(ctx.state, ctx.user_input, ctx.answer)
+    answered = assessment.record_answer(ctx.state, ctx.user_input, ctx.answer)
+    # ⚠️ **P-1 的例外**：测评判定失败时 payload 是"保守记 missing"的兜底值，
+    # 而它**本来就要记账**（否则答满题量的守卫永远不满足）。所以这里不看 `ok`。
+    _note_degraded(ctx, answered)
+    ctx.result.record = answered.payload if answered.payload else None
 
 
 def _h_assessment_finalize(ctx: TurnContext) -> None:
@@ -343,7 +421,9 @@ def _h_condense_progress(ctx: TurnContext) -> None:
     if not dropped:
         return
     previous = ctx.state.get("rolling_summary") or ""
-    ctx.state["rolling_summary"] = summarize_progress(ctx.state, dropped, previous)
+    summarized = summarize_progress(ctx.state, dropped, previous)
+    _note_degraded(ctx, summarized)
+    ctx.state["rolling_summary"] = summarized.payload.get("summary") or ""
 
     history = ctx.state.get("conversation_history") or []
     ctx.state["conversation_history"] = history[len(dropped):]
@@ -362,7 +442,9 @@ def _h_condense_cycle(ctx: TurnContext) -> None:
         return
 
     skeleton = memory.current_cycle_skeleton(ctx.state, seq)
-    text = summarize_cycle(ctx.state, seq, skeleton)
+    summarized = summarize_cycle(ctx.state, seq, skeleton)
+    _note_degraded(ctx, summarized)
+    text = summarized.payload.get("summary") or ""
     memory.record_cycle_summary(ctx.state, seq, text, skeleton.get("topics"))
     memory.upsert_session_record(
         ctx.state, seq,
@@ -427,13 +509,24 @@ def missing_handlers() -> tuple[str, ...]:
 # ---------------------------------------------------------------------------
 
 def execute_slots(ctx: TurnContext, selector=None) -> None:
-    """按 `SLOTS` 顺序执行；`stage_pre` 之后固定推进一次（骨架推进点 #1）。"""
+    """按 `SLOTS` 顺序执行；`stage_pre` 之后固定推进一次（骨架推进点 #1）。
+
+    **F5**：若当前轮有 trace，顺带记录"跑了什么、跳过了什么、各自改了什么"——
+    这正是 X-16 那类缺陷排查时缺的那份证据。
+    """
     selector = selector or MatrixSelector()
+    trace = trace_mod.current()
     for slot in SLOTS:
         for cap in selector.select(ctx, slot):
             if not PRECONDITIONS[cap.name](ctx):
+                if trace is not None:
+                    trace.step(cap.name, status="skipped", reason="precondition")
                 continue
             _ensure_executable(cap)
+            before = _snapshot(ctx.state) if trace is not None else None
             HANDLERS[cap.name](ctx)
+            if trace is not None:
+                entry = trace.step(cap.name, status="ran")
+                trace.changed(entry, _diff(before, ctx.state))
         if slot == SLOT_STAGE_PRE:
             _advance(ctx)

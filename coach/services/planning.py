@@ -18,6 +18,7 @@ from datetime import date
 from coach.domain.cursor import fresh_progress, is_plan_finished
 from coach.domain.memory import REVIEW_UNCOVERED_SESSIONS, derive_due_for_review
 from coach.domain.models import ConfirmationVerdict
+from coach.domain.perception import KIND_PLAN_CONFIRMATION, PerceptionResult
 from coach.domain.profile import render_profile
 from coach.domain.plan_rules import (
     DEFAULT_WINDOW_LENGTH,
@@ -301,14 +302,15 @@ def describe_plan(state, max_days: int = 7) -> str:
     return "\n".join(lines)
 
 
-def confirm_plan(state, user_input: str) -> ConfirmationVerdict | None:
+def confirm_plan(state, user_input: str) -> PerceptionResult:
     """用 LLM 判断用户是否确认计划；确认则置 plan_confirmed=True。
 
-    返回判定结果；判定失败（无 Key / 网络异常）返回 None，并**保持等待状态**。
+    **F1 判定点**：`kind = plan_confirmation`。判定失败返回 `ok=False` 并
+    **保持等待**（P-4：不推进）；"没有窗口"是同一种失败但 `error` 不同。
     """
     window = state.get("current_window") or {}
     if not window:
-        return None
+        return PerceptionResult.failure(KIND_PLAN_CONFIRMATION, error="no_window")
 
     summary = describe_plan(state)
     user_content = (
@@ -325,8 +327,9 @@ def confirm_plan(state, user_input: str) -> ConfirmationVerdict | None:
         )
     except Exception as exc:                  # noqa: BLE001 —— 判定失败就继续等待
         print(f"[计划确认判定失败，保持等待] {type(exc).__name__}: {exc}")
-        return None
+        return PerceptionResult.failure(KIND_PLAN_CONFIRMATION,
+                                        error=f"{type(exc).__name__}: {exc}")
 
     if verdict.confirmed:
         state["plan_confirmed"] = True
-    return verdict
+    return PerceptionResult.validated(KIND_PLAN_CONFIRMATION, verdict)

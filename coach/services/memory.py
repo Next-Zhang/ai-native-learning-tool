@@ -14,6 +14,12 @@
 """
 
 from coach.domain import memory
+from coach.domain.guardrails import GuardrailContext, run_guardrails
+from coach.domain.perception import (
+    KIND_CYCLE_SUMMARY,
+    KIND_PROGRESS_SUMMARY,
+    PerceptionResult,
+)
 from coach.llm import client
 from coach.prompts.tasks import (
     CONDENSE_CYCLE_SYSTEM_PROMPT,
@@ -30,16 +36,16 @@ __all__ = [
 _MAX_INPUT_CHARS = 4000
 
 
-def _polish(system_prompt: str, user_content: str, label: str) -> str:
-    """调模型拿一段润色文本；**任何失败都返回空串**（由调用方走确定性兜底）。"""
+def _polish(system_prompt: str, user_content: str, label: str) -> tuple[str, str]:
+    """调模型拿一段润色文本；失败返回 `("", 原因)`（由调用方走确定性兜底）。"""
     try:
         data = client.json_call(system_prompt, user_content, label=label)
         if not isinstance(data, dict):
             raise TypeError(f"压缩结果不是 JSON 对象：{type(data).__name__}")
-        return str(data.get("summary") or "").strip()
+        return str(data.get("summary") or "").strip(), ""
     except Exception as exc:                  # noqa: BLE001 —— 压缩失败绝不中断主流程
         print(f"[记忆压缩失败，已使用确定性摘要] {type(exc).__name__}: {exc}")
-        return ""
+        return "", f"{type(exc).__name__}: {exc}"
 
 
 def _compose(skeleton_text: str, polished: str) -> str:
@@ -47,10 +53,17 @@ def _compose(skeleton_text: str, polished: str) -> str:
 
     知识点名与验收动作永远来自骨架（代码生成），模型只能在后面补一段人话；
     它既不能替换事实，也不能凭空引入一个画像里不存在的知识点。
+
+    **F4**：结构保障之外再加一道**运行期护栏** —— 润色段一旦出现判定词
+    （掌握度 / 薄弱点 / 评分 …）就**整段丢弃**，只留骨架。
+    提示词里写了禁令，但提示词不是强制。
     """
     if not polished or polished == skeleton_text:
         return skeleton_text
-    return f"{skeleton_text}\n【补充】{polished}"
+    checked = run_guardrails(polished, GuardrailContext(kind="summary_supplement"))
+    if not checked.text:
+        return skeleton_text
+    return f"{skeleton_text}\n【补充】{checked.text}"
 
 
 def fallback_cycle_summary(state, seq=None) -> str:
@@ -58,20 +71,29 @@ def fallback_cycle_summary(state, seq=None) -> str:
     return memory.render_cycle_skeleton(memory.current_cycle_skeleton(state, seq))
 
 
-def summarize_cycle(state, seq=None, skeleton=None) -> str:
-    """**L2 定稿摘要**：确定性骨架 + 模型润色（模型失败时只留骨架）。"""
+def summarize_cycle(state, seq=None, skeleton=None) -> PerceptionResult:
+    """**L2 定稿摘要**（**F1 判定点**：`kind = cycle_summary`）。
+
+    模型失败时 payload 里是**确定性骨架**（兜底，可用），但 `ok=False` ——
+    改造前只返回一个字符串，调用方**分不清"模型润色"与"兜底"**。
+    """
     skeleton = skeleton or memory.current_cycle_skeleton(state, seq)
     skeleton_text = memory.render_cycle_skeleton(skeleton)
     user_content = (
         f"【这次学习的事实骨架】\n{skeleton_text}\n\n"
         f"请据此写一条简短摘要。"
     )
-    return _compose(skeleton_text,
-                    _polish(CONDENSE_CYCLE_SYSTEM_PROMPT, user_content, "condense_cycle"))
+    polished, error = _polish(CONDENSE_CYCLE_SYSTEM_PROMPT, user_content, "condense_cycle")
+    text = _compose(skeleton_text, polished)
+    if polished:
+        return PerceptionResult.success(KIND_CYCLE_SUMMARY, {"summary": text})
+    return PerceptionResult.failure(KIND_CYCLE_SUMMARY,
+                                    payload={"summary": text},
+                                    error=error or "empty_summary")
 
 
-def summarize_progress(state, dropped_messages, previous: str = "") -> str:
-    """**L1 滚动摘要**：把（此前进展摘要 + 被挤出的较早对话）压成新的滚动摘要。
+def summarize_progress(state, dropped_messages, previous: str = "") -> PerceptionResult:
+    """**L1 滚动摘要**（**F1 判定点**：`kind = progress_summary`）。
 
     失败兜底优先保留**已有的滚动摘要**（它至少是上一轮的结论），
     没有才退回确定性骨架 —— 记忆不能因为一次调用失败而变空。
@@ -91,7 +113,9 @@ def summarize_progress(state, dropped_messages, previous: str = "") -> str:
         f"【本次学习的事实骨架】\n{skeleton}\n\n"
         f"请合并成一条进展摘要。"
     )
-    polished = _polish(CONDENSE_PROGRESS_SYSTEM_PROMPT, user_content, "condense_progress")
+    polished, error = _polish(CONDENSE_PROGRESS_SYSTEM_PROMPT, user_content, "condense_progress")
     if polished:
-        return polished
-    return previous or skeleton
+        return PerceptionResult.success(KIND_PROGRESS_SUMMARY, {"summary": polished})
+    return PerceptionResult.failure(KIND_PROGRESS_SUMMARY,
+                                    payload={"summary": previous or skeleton},
+                                    error=error or "empty_summary")

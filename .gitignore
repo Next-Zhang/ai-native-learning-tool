@@ -16,5 +16,7 @@ evals/results/
 evals/*_overview.md
 # 指标事件（本机运行产物，可由 app 运行时重新采集）
 data/metrics/
+# 单轮因果链（F5；本机运行产物，含用户原话与回复，仅本机留存；超 2 MB 自动轮转）
+data/traces/
 # 测试审计的结构化派生物（由 tests/audit.py --json 生成，可重生成；报告 .md 需提交）
 docs/test-audit.json

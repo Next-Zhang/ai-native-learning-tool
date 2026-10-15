@@ -224,7 +224,7 @@ def test_evaluate_without_llm_keeps_state():
         state = _evaluation_state()
         result = evaluate(state)
 
-        assert result is None
+        assert result.ok is False, "判定失败必须如实报 ok=False（P-1）"
         assert state["latest_result"] is None                  # 绝不写入假判定
         assert state["current_stage"] == STAGE_EVALUATION
         assert try_advance(state) is None                      # 因此不能推进

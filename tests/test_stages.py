@@ -36,8 +36,12 @@ from coach.domain.stages import (
 )
 from coach.domain.state_schema import (
     DEFAULT_STATE,
+    LEGACY_VERSION,
+    MIGRATIONS,
+    SCHEMA_VERSION,
     ensure_keys,
     migrate_legacy_fields,
+    schema_version_of,
     upgrade_plan_progress,
     upgrade_window_shape,
 )
@@ -250,6 +254,85 @@ def test_ensure_keys_runs_migration_before_filling_defaults():
     assert old_state["session_minutes"] == 25
     assert "sessions_per_week" in old_state
     assert old_state["sessions_per_week"] is None
+
+
+# ---------------------------------------------------------------------------
+# 3b) Schema 版本与迁移登记（**F6**）
+# ---------------------------------------------------------------------------
+
+def test_schema_version_is_recorded():
+    """升级一次就应记下版本号 —— 它是"这份 state 是什么形状"的唯一答案。"""
+    state = {"current_stage": "learning"}
+
+    changed = ensure_keys(state)
+
+    assert state["schema_version"] == SCHEMA_VERSION
+    # 新文件由"补默认键"补上（条目是 `schema_version`），
+    # 旧文件由"记录版本"补上（条目是 `schema_version->N`）—— 两者都含这个词。
+    assert any("schema_version" in item for item in changed), changed
+
+
+def test_schema_version_is_idempotent():
+    """第二次加载不得再报任何变更（否则每次启动都会白写一次盘）。"""
+    state = {"current_stage": "learning"}
+    ensure_keys(state)
+
+    assert ensure_keys(state) == []
+
+
+def test_schema_version_of_is_lenient():
+    """版本号是元数据：读不动它不该让程序起不来，一律退化到 `LEGACY_VERSION`。"""
+    assert schema_version_of({}) == LEGACY_VERSION
+    assert schema_version_of({"schema_version": None}) == LEGACY_VERSION
+    assert schema_version_of({"schema_version": "abc"}) == LEGACY_VERSION
+    assert schema_version_of({"schema_version": ""}) == LEGACY_VERSION
+    assert schema_version_of({"schema_version": "17"}) == 17
+    assert schema_version_of({"schema_version": 18}) == 18
+
+
+def test_migrations_are_registered_in_ascending_version_order():
+    """登记表必须按版本升序，且不得登记高于当前版本的迁移。
+
+    这张表存在的意义就是"顺序不再靠人记"；顺序错了会**静默改错**。
+    """
+    versions = [version for version, _label, _migrate in MIGRATIONS]
+    assert versions == sorted(versions), f"迁移必须按版本升序：{versions}"
+    assert all(v <= SCHEMA_VERSION for v in versions), "不能登记高于当前版本的迁移"
+    for version, label, migrate in MIGRATIONS:
+        assert isinstance(version, int) and version > 0
+        assert label, "每条迁移都要有说明"
+        assert callable(migrate)
+
+
+def test_migration_order_is_load_bearing():
+    """顺序**确实有依赖**：先改名（current_plan→current_window），补窗口结构才用得上。
+
+    把两者对调，`upgrade_window_shape` 就会跑在旧字段名上、什么都不补 —— 且不报错。
+    """
+    # 用 30 分钟：plan_unit 的阈值是 `<45 -> session`（45 分钟及以上会变成 "day"）。
+    state = {"daily_minutes": 30, "current_plan": {"horizon_days": 5, "days": []}}
+
+    ensure_keys(state)
+
+    assert state["session_minutes"] == 30
+    assert state["current_window"]["length"] == 5      # 用上了改名结果
+    assert state["current_window"]["unit"] == "session"
+    assert state["schema_version"] == SCHEMA_VERSION
+
+
+def test_legacy_file_without_version_still_gets_every_migration():
+    """没有版本号的旧文件：**迁移照跑** —— 这是"不做版本门控"的直接后果，也是它的目的。
+
+    门控会把"文件声称的版本"当成事实；in-memory 构造的 state 随时可能名不副实，
+    那时跳过迁移就是**静默丢数据**。
+    """
+    legacy = {"current_stage": "assessment", "skill_profile": {"pandas": 0.5}}
+
+    ensure_keys(legacy)
+
+    assert legacy["schema_version"] == SCHEMA_VERSION
+    assert legacy["evidence"]["pandas"], "旧画像必须被补种成证据，否则等于抹掉掌握度"
+    assert legacy["evidence"]["pandas"][0]["source"] == "migrated_v0.17"
 
 
 def test_migration_is_idempotent():

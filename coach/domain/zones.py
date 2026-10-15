@@ -67,6 +67,8 @@ ZONE_OF = {
     "session_summaries": ZONE_PROGRESS,
 
     # ── 当前状态（每轮）──
+    # 文件级元数据；归区只是为了"每个键都必须有归属"这条契约完整。
+    "schema_version": ZONE_RUNTIME,
     "current_stage": ZONE_RUNTIME,
     "today_task": ZONE_RUNTIME,
     "assessment_progress": ZONE_RUNTIME,

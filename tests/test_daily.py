@@ -229,7 +229,8 @@ def test_detect_submission_without_llm_keeps_state():
 
         verdict = detect_submission(state, "我写好了 df = pd.read_csv('a.csv')")
 
-        assert verdict is None
+        assert verdict.ok is False, "判定失败必须如实报 ok=False"
+        assert verdict.error, "失败原因要能读到（F1）"
         assert state["pending_submission"] is None        # 绝不误报提交
         assert try_advance(state) is None                 # 因此不能进入验收
     finally:
@@ -248,8 +249,8 @@ def test_live_submission_detection():
     state = _learning_state()
     build_today_task(state)
     question = detect_submission(state, "这个 read_csv 的 encoding 参数是什么意思？")
-    print("        提问判定:", question)
-    assert question is not None and question.is_submission is False
+    print("        提问判定:", question.payload)
+    assert question.ok and question.payload["is_submission"] is False
     assert state["pending_submission"] is None
 
     # 给出代码 -> 算提交，并写入 pending_submission
@@ -259,8 +260,8 @@ def test_live_submission_detection():
         state2,
         "我写好了：import pandas as pd\n df = pd.read_csv('sales.csv')\n print(df.head())",
     )
-    print("        提交判定:", answer)
-    assert answer is not None and answer.is_submission is True
+    print("        提交判定:", answer.payload)
+    assert answer.ok and answer.payload["is_submission"] is True
     assert state2["pending_submission"] is not None
     assert "read_csv" in state2["pending_submission"]["content"]
     assert try_advance(state2) == STAGE_EVALUATION
@@ -289,7 +290,7 @@ def test_detect_submission_rejects_string_false():
 
         verdict = detect_submission(state, "这个函数怎么写？")
 
-        assert verdict is not None and verdict.is_submission is False
+        assert verdict.ok and verdict.payload["is_submission"] is False
         assert state["pending_submission"] is None, "提问绝不能被记成提交"
     finally:
         llm_client.json_call = original

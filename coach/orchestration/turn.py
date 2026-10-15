@@ -17,6 +17,7 @@
 """
 
 from coach.metrics import recorder as metrics
+from coach.observability import trace as trace_mod
 from coach.orchestration.executor import TurnContext, TurnResult, execute_slots
 
 __all__ = ["TurnResult", "run_turn"]
@@ -40,6 +41,9 @@ def run_turn(state, user_input: str, use_rag: bool = False, *, selector=None) ->
     # 指标归属：本轮内的 LLM 调用都记在本轮**起始阶段**下（近似但足够定位）
     metrics.set_stage(ctx.stage_before)
 
+    # **F5**：开一条单轮因果链。`start` 总是成功；是否落盘由 trace recorder 决定。
+    trace_mod.start(user_input=user_input, stage_before=ctx.stage_before)
+
     execute_slots(ctx, selector=selector)
 
     result = ctx.result
@@ -53,4 +57,8 @@ def run_turn(state, user_input: str, use_rag: bool = False, *, selector=None) ->
         result="ok",
         verdict=None,
     )
+
+    # `finish` 会清空当前轮的 trace；采集失败也绝不影响本轮的返回。
+    trace_mod.finish(answer=result.answer, sources=result.sources,
+                     stage_after=result.stage_after)
     return result

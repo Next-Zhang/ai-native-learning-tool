@@ -16,6 +16,7 @@ from typing import Any
 
 from coach.config import MissingApiKeyError, Settings, get_settings
 from coach.metrics import recorder as metrics
+from coach.observability import trace as trace_mod
 
 _clients: dict[tuple[str, str], Any] = {}
 
@@ -62,6 +63,18 @@ def _record_llm_call(
             cost=metrics.estimate_cost(tokens_in, tokens_out, settings),
             result=result,
         )
+
+        # **F5**：把这次调用挂到当前轮的因果链上（不在轮内时自动忽略）。
+        call = {
+            "label": label,
+            "ok": result == "ok",
+            "latency_ms": latency_ms,
+            "tokens_in": tokens_in,
+            "tokens_out": tokens_out,
+        }
+        if result != "ok":
+            call["error"] = result
+        trace_mod.note_llm_call(**call)
     except Exception:                      # noqa: BLE001 —— 采集绝不能影响 LLM 调用
         pass
 

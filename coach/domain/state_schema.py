@@ -8,7 +8,35 @@ import json
 from coach.domain.plan_rules import plan_unit
 from coach.domain.stages import STAGE_GOAL_CLARIFICATION
 
+# ---------------------------------------------------------------------------
+# Schema 版本（**F6**）
+# ---------------------------------------------------------------------------
+
+#: 当前状态 schema 版本。**改动 state 的形状（加键 / 改嵌套结构 / 改字段语义）就 +1**，
+#: 并在下面 `MIGRATIONS` 里登记一条把旧文件升上来的迁移。
+SCHEMA_VERSION = 18
+
+#: 文件里没有 `schema_version` 时的假定版本 —— 即"v0.12 之前的形状"。
+LEGACY_VERSION = 0
+
+
+def schema_version_of(state) -> int:
+    """读文件里的 schema 版本；缺失或非法一律按 `LEGACY_VERSION`。
+
+    这里对"非法值"是**宽容**的（返回 0 而不是抛错）：版本号是元数据，
+    读不动它不该让整个程序起不来；而返回 0 会让所有迁移都跑一遍 ——
+    迁移各自幂等，这是安全的保守方向。
+    """
+    try:
+        return max(0, int(state.get("schema_version") or 0))
+    except (TypeError, ValueError):
+        return LEGACY_VERSION
+
+
 DEFAULT_STATE = {
+    # 文件级元数据：这份 state 是哪个版本的形状（见文件头的 SCHEMA_VERSION）。
+    "schema_version": SCHEMA_VERSION,
+
     "learning_goal": None,
     "current_level": None,
     "session_minutes": None,       # **单次**可投入分钟数（v0.13 起替代 daily_minutes）
@@ -190,8 +218,34 @@ def upgrade_archive_shape(state) -> list[str]:
     return ["conversation_archive(segmented)"]
 
 
+#: **迁移登记表**：`(引入版本, 说明, 迁移函数)`，**必须按版本升序**。
+#:
+#: 这张表的价值是让"迁移顺序"**不再靠人记**：改名必须排在补结构之前，
+#: 否则补结构会跑在旧字段名上、静默改错（`test_migration_order_is_load_bearing` 钉住了这一点）。
+#:
+#: ⚠️ **它不做版本门控**（不是"版本 < N 才跑"），每一次 `ensure_keys` 都会跑完。理由是：
+#: 门控会把"文件**声称**的版本"当成事实，而 in-memory 构造的 state
+#: （测试、工具、手改过的文件）随时可能名不副实 —— 那会让"该做的迁移被跳过"。
+#: 迁移各自幂等（只补缺失的键、不覆盖已有值、不删旧键），所以"总是跑"是安全的。
+#: 将来若真出现**非幂等**迁移，它应当**在自己的函数里**读 `schema_version_of` 判断，
+#: 而不是靠这张表统一门控 —— 把门开在需要它的那一条上。
+MIGRATIONS = (
+    (13, "字段改名：daily_minutes→session_minutes、current_plan→current_window", migrate_legacy_fields),
+    (14, "旧计划结构补齐为执行窗口：length / unit / milestone_id", upgrade_window_shape),
+    (14, "游标补 attempts（嵌套键，ensure_keys 的顶层补齐覆盖不到）", upgrade_plan_progress),
+    (18, "把旧的 skill_profile 补种成 evidence（画像改为由证据派生）", upgrade_evidence_shape),
+    (18, "归档由扁平消息列表改为按单次学习分段", upgrade_archive_shape),
+)
+
+
 def ensure_keys(state, defaults=None) -> list[str]:
-    """升级 state：迁移旧字段 → 升级嵌套结构 → 补齐缺失顶层键；返回**全部变更**。
+    """升级 state；返回**全部变更**（调用方按"非空即落盘"使用）。
+
+    三步（顺序即依赖）：
+    1. **跑完 `MIGRATIONS`**（幂等）—— 必须先于补默认键，
+       否则 `session_minutes` 会被默认值 `None` 占位，改名迁移因"新值非空"被跳过。
+    2. **补齐缺失的顶层键**（`DEFAULT_STATE` 里有而 state 里没有的）。
+    3. **记录 `schema_version`**。
 
     **返回值必须包含迁移结果**：调用方（`storage.state_store.load_state`）只在
     返回非空时才落盘。旧实现丢弃迁移记录 → 迁移只在内存生效，**文件里始终留着旧字段**，
@@ -201,10 +255,8 @@ def ensure_keys(state, defaults=None) -> list[str]:
     后续迁移因"新值非空"被跳过）。
     """
     changed: list[str] = []
-    changed.extend(migrate_legacy_fields(state))
-    changed.extend(upgrade_window_shape(state))
-    changed.extend(upgrade_plan_progress(state))
-    changed.extend(upgrade_archive_shape(state))
+    for _version, _label, migrate in MIGRATIONS:
+        changed.extend(migrate(state))          # 每一个都幂等，所以总是跑（见 MIGRATIONS 的说明）
 
     if defaults is None:
         defaults = DEFAULT_STATE
@@ -214,6 +266,8 @@ def ensure_keys(state, defaults=None) -> list[str]:
             state[key] = json.loads(json.dumps(value))
             changed.append(key)
 
-    # v0.18：**补种必须在补默认键之后** —— 它要能看到补出来的空 evidence。
-    changed.extend(upgrade_evidence_shape(state))
+    if state.get("schema_version") != SCHEMA_VERSION:
+        state["schema_version"] = SCHEMA_VERSION
+        changed.append(f"schema_version->{SCHEMA_VERSION}")
+
     return changed

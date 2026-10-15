@@ -25,6 +25,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from coach.domain.models import UserProfile
+from coach.domain.perception import KIND_PROFILE, PerceptionResult
 from coach.domain.stages import (
     STAGE_EVALUATION,
     STAGE_GOAL_CLARIFICATION,
@@ -115,7 +116,10 @@ def _counting_extract(counter: dict):
 
     def fake(text):
         counter["calls"] += 1
-        return UserProfile()
+        # **F1**：判定点统一返回 `PerceptionResult`（这里是"抽取失败"的形态）
+        return PerceptionResult.failure(KIND_PROFILE,
+                                         payload=UserProfile().model_dump(),
+                                         error="test_stub")
 
     profile_service.extract_profile = fake
     try:
@@ -333,6 +337,8 @@ def test_extract_profile_runs_when_profile_incomplete():
 
     assert counter["calls"] == 1, "画像未齐时必须抽取"
     assert result.updated_fields == []                  # 假抽取返回空画像
+    # **F1**：判定失败不再"隐形" —— 它出现在 TurnResult 上，界面层可以如实提示
+    assert result.perception_errors == ["profile:test_stub"]
 
 
 # ---------------------------------------------------------------------------

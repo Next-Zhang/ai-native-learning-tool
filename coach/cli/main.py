@@ -10,6 +10,7 @@ from coach.domain.plan_rules import current_milestone
 from coach.domain.profile_rules import OPTIONAL_PROFILE_FIELDS, PROFILE_FIELDS
 from coach.domain.stages import stage_label
 from coach.metrics import recorder as metrics
+from coach.observability import trace as trace_mod
 from coach.orchestration.turn import TurnResult, run_turn
 from coach.services.daily_task import describe_progress
 from coach.services.maintenance import SCOPE_ALL, SCOPE_HISTORY, perform_reset
@@ -99,6 +100,14 @@ def render_turn(result: TurnResult, state) -> None:
     if result.sources:
         print("\n[参考资料]", _format_sources(result.sources))
 
+    # **F1**：把"这轮有判定没跑成"如实告诉用户 —— 改造前它完全不可见。
+    for problem in result.perception_errors:
+        print(f"[降级] 一个判定点未成功：{problem}（已按兜底处理）")
+
+    # **F4**：内容层护栏命中（模型越界、被代码改掉）也如实提示。
+    for hit in result.guardrail_hits:
+        print(f"[护栏] 模型产出越界，已按确定性规则修正：{hit}")
+
     if result.updated_fields:
         labels = "、".join(FIELD_LABELS[f] for f in result.updated_fields)
         print(f"\n[画像] 本轮新增：{labels}")
@@ -108,8 +117,9 @@ def render_turn(result: TurnResult, state) -> None:
         print(f"[测评] 已生成测评大纲：{len(result.assessment_topics)} 题（{topics}）")
 
     if result.record:
-        print(f"[测评] 第 {result.record.index} 题「{result.record.topic}」判定："
-              f"{result.record.verdict}（{result.record.note}）")
+        # F1：感知契约的 payload 是 dict（不再用 Pydantic 模型）
+        print(f"[测评] 第 {result.record['index']} 题「{result.record['topic']}」判定："
+              f"{result.record['verdict']}（{result.record['note']}）")
 
     if result.summary:
         print(f"[测评] 测评完成：知识点得分 {result.summary['skill_profile']}")
@@ -128,10 +138,10 @@ def render_turn(result: TurnResult, state) -> None:
               f"（起始 {plan.get('start_date')}）：{themes}")
 
     if result.confirmation is not None:
-        if result.confirmation.confirmed:
-            print(f"[计划] 用户已确认计划（{result.confirmation.reason}）")
+        if result.confirmation["confirmed"]:
+            print(f"[计划] 用户已确认计划（{result.confirmation['reason']}）")
         else:
-            print(f"[计划] 尚未确认：{result.confirmation.reason}")
+            print(f"[计划] 尚未确认：{result.confirmation['reason']}")
 
     if result.task_created:
         window_unit = ((state.get("current_window") or {}).get("unit") or "session")
@@ -140,16 +150,17 @@ def render_turn(result: TurnResult, state) -> None:
               f"第 {result.task_created['task']} 个）："
               f"{result.task_created['goal']}（预计 {result.task_created.get('minutes', 0)} 分钟）")
 
-    if result.submission is not None and result.submission.is_submission:
-        print(f"[任务] 收到提交（{result.submission.reason}）：{result.submission.content[:80]}")
+    if result.submission is not None and result.submission["is_submission"]:
+        print(f"[任务] 收到提交（{result.submission['reason']}）："
+              f"{str(result.submission['content'] or '')[:80]}")
 
     if result.evaluation_result is not None:
         evaluation = result.evaluation_result
-        print(f"[验收] 判定：完成度={evaluation.completion} | 掌握度={evaluation.mastery} "
-              f"| 下一步={evaluation.next_action}")
-        print(f"[验收] 错误类型：{'、'.join(evaluation.error_types) or '（无）'}")
-        if evaluation.feedback:
-            print(f"[验收] 反馈：{evaluation.feedback}")
+        print(f"[验收] 判定：完成度={evaluation['completion']} | 掌握度={evaluation['mastery']} "
+              f"| 下一步={evaluation['next_action']}")
+        print(f"[验收] 错误类型：{'、'.join(evaluation['error_types'] or []) or '（无）'}")
+        if evaluation["feedback"]:
+            print(f"[验收] 反馈：{evaluation['feedback']}")
 
     if result.update_summary is not None:
         summary = result.update_summary
@@ -230,6 +241,9 @@ def main() -> int:
     # 指标采集：库默认**关闭**（避免测试与工具误写真实指标文件），
     # 由 CLI 启动时显式开启。事件写入 data/metrics/events.jsonl（PRD S-07）。
     recorder = metrics.enable()
+    # 单轮因果链（F5）：与指标一起开启，落在 data/traces/turns.jsonl
+    # （超 2 MB 轮转一代并留痕）。它含用户原话与回复，**仅本机留存**。
+    trace_mod.enable()
 
     # 知识库检索开关：当前**默认关闭**（先不调用 RAG）
     use_rag = False

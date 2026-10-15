@@ -18,8 +18,17 @@ r"""测试审计：按**断言对象**给 tests/ 下的用例分类，输出可�
 import argparse
 import ast
 import json
+import sys
 from collections import Counter, defaultdict
 from pathlib import Path
+
+# 报告正文含 ✅ 等**非 GBK 字符**；Windows 控制台默认 GBK，`print` 会直接抛
+# `UnicodeEncodeError` —— 文档里写的那条命令因此**根本跑不起来**（v0.18 实测）。
+# 这里统一切到 UTF-8，并对无法编码的字符降级替换：宁可少一个字符，也不要整份报告打不出来。
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except (AttributeError, OSError):          # 极老的解释器 / 已被重定向的流
+    pass
 
 TESTS_DIR = Path(__file__).resolve().parent
 ROOT = TESTS_DIR.parent

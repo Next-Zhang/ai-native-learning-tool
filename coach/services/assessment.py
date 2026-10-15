@@ -6,6 +6,8 @@
 3. finalize()         答满题量即结束（**在 domain.assessment_rules 里做确定性聚合**）
 
 兜底：出题失败用目标生成三道通用递进题；判卷调用失败按 `missing` 记录，不中断测评。
+返回统一走 `PerceptionResult`（**F1**）：`ok=False` 表示"没有判定结果"或"判定降级"，
+`error` 说明是哪一种。
 """
 
 from coach.domain.assessment_rules import (
@@ -15,6 +17,7 @@ from coach.domain.assessment_rules import (
     normalize_plan,
 )
 from coach.domain.models import AnswerRecord
+from coach.domain.perception import KIND_ASSESSMENT_VERDICT, PerceptionResult
 from coach.llm import client
 from coach.prompts.tasks import (
     ASSESSMENT_JUDGE_SYSTEM_PROMPT,
@@ -62,8 +65,12 @@ def ensure_plan(state) -> bool:
     return True
 
 
-def record_answer(state, user_input: str, coach_reply: str) -> AnswerRecord | None:
-    """记录当前这道题的作答与判定。没有进行中的题目时返回 None。
+def record_answer(state, user_input: str, coach_reply: str) -> PerceptionResult:
+    """记录当前这道题的作答与判定（**F1 判定点**：`kind = assessment_verdict`）。
+
+    `ok=False` 有两种：`error="no_question"`（没有进行中的题）与判定调用失败。
+    ⚠️ 后者**仍然记账**（保守记 `missing`）—— 否则"答满题量"的守卫永远不满足。
+    这是 **P-1 的例外**，已在 executor 里显式注明。
 
     注意：调用方应在"题目是上一轮提出的"情况下调用（首次生成大纲那一轮不记录）。
     """
@@ -72,7 +79,7 @@ def record_answer(state, user_input: str, coach_reply: str) -> AnswerRecord | No
     records = progress.get("records") or []
     index = current_index(progress)
     if not index or index > len(plan):
-        return None
+        return PerceptionResult.failure(KIND_ASSESSMENT_VERDICT, error="no_question")
 
     question = plan[index - 1]
     user_content = (
@@ -81,6 +88,7 @@ def record_answer(state, user_input: str, coach_reply: str) -> AnswerRecord | No
         f"【用户的回答】\n{user_input}"
     )
 
+    error = ""
     try:
         data = client.json_call(
             ASSESSMENT_JUDGE_SYSTEM_PROMPT, user_content, label="assessment_judge"
@@ -92,6 +100,7 @@ def record_answer(state, user_input: str, coach_reply: str) -> AnswerRecord | No
     except Exception as exc:                      # noqa: BLE001 —— 判定失败保守记为 missing
         print(f"[测评判定失败，按 missing 记录] {type(exc).__name__}: {exc}")
         data = {"verdict": "missing", "answer": "", "note": "判定调用失败"}
+        error = f"{type(exc).__name__}: {exc}"
 
     record = AnswerRecord(
         index=index,
@@ -105,7 +114,12 @@ def record_answer(state, user_input: str, coach_reply: str) -> AnswerRecord | No
     if len(records) >= len(plan):
         progress["finished"] = True
     state["assessment_progress"] = progress
-    return record
+
+    if error:
+        # 兜底值进了 state（记账），但 **ok=False** —— 调用方不得把它当"真判定"用。
+        return PerceptionResult.failure(KIND_ASSESSMENT_VERDICT,
+                                        payload=record.model_dump(), error=error)
+    return PerceptionResult.validated(KIND_ASSESSMENT_VERDICT, record)
 
 
 def describe_progress(state) -> str:
