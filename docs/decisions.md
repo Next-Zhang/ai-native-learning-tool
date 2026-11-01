@@ -1,6 +1,6 @@
 # 架构与产品决策
 
-更新：2026-10-14。本文记录取舍；代码现状见 [当前架构](architecture.md)，待办状态见 [交付清单](delivery.md)。
+更新：2026-11-01。本文记录取舍；代码现状见 [当前架构](architecture.md)，待办状态见 [交付清单](delivery.md)。
 历史原文见 [归档](history.md)。决策存在不表示其全部约束已被实现。
 
 ## ADR-001：围绕能力目标持续学习
@@ -49,6 +49,14 @@
 ## ADR-007：Way 作用域下的四模块记忆管理
 
 已接受，尚未实现。Router 管类型/来源准入，存储管记录/引用/版本一致性，上下文按任务读取，生命周期按用途和依赖清理；1.0 单 Way，可沿用 JSON。完整取舍见 [决策记录](adr/0007-memory-management.md)，目标职责见 [目标记忆架构](memory-architecture.md)。ADR-004 的证据/叙事分工继续有效，ADR-005 的 JSON/可选本地 RAG 不等于已实现新记忆能力。
+
+## ADR-008：Workflow、Agent 与产品数据边界
+
+已接受、尚未实现。Workflow 管业务依赖与确认，Agent 管合法范围内行动选择；业务证据、资料、运行检查点分别归所属服务，上下文独立。长期多人在线、当前本机 MVP；旧综合记忆规格部分被替代。见 [决策记录](adr/0008-workflow-agent-boundaries.md)。
+
+## ADR-009：产品数据管理与领域 Router
+
+已接受、尚未实现。产品数据管理与访问层按领域设置 Router；所有 Agent 数据读取/写入与上下文预加载均经权限和字段检查。用户与会话数据取代含糊的“Agent 长期记忆”命名。见 [决策记录](adr/0009-domain-data-routers.md) 与 [权限矩阵](data-access-design.md)。
 
 ## 必须保留的约束
 
