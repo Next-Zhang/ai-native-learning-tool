@@ -1,0 +1,268 @@
+{
+  "schema_version": 1,
+  "prompts": [
+    {
+      "id": "profile.extract",
+      "version": "0.18.0",
+      "sha256": "c81df30d1fc171d829fa4b25e2b689092b635f4ac432cb5cc63ea506c6e6a0f0",
+      "purpose": "EXTRACT_SYSTEM_PROMPT",
+      "output": "JSON",
+      "contract": "UserProfile",
+      "acceptance": [
+        "AC-01",
+        "AC-02"
+      ],
+      "status": "legacy_current"
+    },
+    {
+      "id": "assessment.plan",
+      "version": "0.18.0",
+      "sha256": "a9599152b18a18f8b847a37cfab12d6bec95e8b0ccc2ca4daa066347db362320",
+      "purpose": "ASSESSMENT_PLAN_SYSTEM_PROMPT",
+      "output": "JSON",
+      "contract": "AssessmentPlan",
+      "acceptance": [
+        "AC-24"
+      ],
+      "status": "legacy_current"
+    },
+    {
+      "id": "assessment.judge",
+      "version": "0.18.0",
+      "sha256": "bc6981cb7bcc10307fd002ad4ffb1b52dca5b64022da987218ba572bba4e3310",
+      "purpose": "ASSESSMENT_JUDGE_SYSTEM_PROMPT",
+      "output": "JSON",
+      "contract": "AnswerRecord",
+      "acceptance": [
+        "AC-05",
+        "AC-07"
+      ],
+      "status": "legacy_current"
+    },
+    {
+      "id": "planning.roadmap",
+      "version": "0.18.0",
+      "sha256": "32202208c4f84e7ef85650792c30272de7a854ec0741604cd2e432cc4a021178",
+      "purpose": "ROADMAP_SYSTEM_PROMPT",
+      "output": "JSON",
+      "contract": "roadmap",
+      "acceptance": [
+        "AC-03",
+        "AC-25"
+      ],
+      "status": "legacy_current"
+    },
+    {
+      "id": "planning.window",
+      "version": "0.18.0",
+      "sha256": "634c0b450482cb0cafb08d5c9caec81d5f3129b851fc596567da0a39b7deb0a5",
+      "purpose": "PLAN_SYSTEM_PROMPT",
+      "output": "JSON",
+      "contract": "window",
+      "acceptance": [
+        "AC-04",
+        "AC-25"
+      ],
+      "status": "legacy_current"
+    },
+    {
+      "id": "planning.confirm",
+      "version": "0.18.0",
+      "sha256": "c2be4bd17a8d928d9fc2466b24a6aec99183050a8164bf630c9a2a8f5288514b",
+      "purpose": "CONFIRM_SYSTEM_PROMPT",
+      "output": "JSON",
+      "contract": "ConfirmationVerdict",
+      "acceptance": [
+        "AC-03",
+        "AC-14"
+      ],
+      "status": "legacy_current"
+    },
+    {
+      "id": "submission.detect",
+      "version": "0.18.0",
+      "sha256": "f7205de597abd3e37a1789a9120fd27d88dde946f72279a56ce3151950bb632a",
+      "purpose": "SUBMISSION_SYSTEM_PROMPT",
+      "output": "JSON",
+      "contract": "SubmissionVerdict",
+      "acceptance": [
+        "AC-06"
+      ],
+      "status": "legacy_current"
+    },
+    {
+      "id": "evaluation.judge",
+      "version": "0.18.0",
+      "sha256": "6c4869927153e0a62242cdb51e902ada5e8a1c03f287cfa86017f9473e035677",
+      "purpose": "EVALUATION_JUDGE_SYSTEM_PROMPT",
+      "output": "JSON",
+      "contract": "EvaluationResult",
+      "acceptance": [
+        "AC-08",
+        "AC-09"
+      ],
+      "status": "legacy_current"
+    },
+    {
+      "id": "summary.session",
+      "version": "0.18.0",
+      "sha256": "b4febd89f6d5deea2f0d05660e81d06f75eb3ff91032248b8e36930011161102",
+      "purpose": "CONDENSE_CYCLE_SYSTEM_PROMPT",
+      "output": "JSON",
+      "contract": "summary",
+      "acceptance": [
+        "AC-27",
+        "AC-32"
+      ],
+      "status": "legacy_current"
+    },
+    {
+      "id": "summary.rolling",
+      "version": "0.18.0",
+      "sha256": "5c5449d89d2df30d124b47f6e3089234c4b3633b0b7e7220f6e7fe65f368bc3a",
+      "purpose": "CONDENSE_PROGRESS_SYSTEM_PROMPT",
+      "output": "JSON",
+      "contract": "summary",
+      "acceptance": [
+        "AC-32"
+      ],
+      "status": "legacy_current"
+    },
+    {
+      "id": "context.rolling",
+      "version": "0.18.0",
+      "sha256": "299c61a02e2b9190b9faccb3c2c55297e0b12622c4bf53d791038d202a7711aa",
+      "purpose": "PROGRESS_MEMORY_PROMPT",
+      "output": "text",
+      "contract": "context-data",
+      "acceptance": [
+        "AC-20",
+        "AC-31"
+      ],
+      "status": "legacy_current"
+    },
+    {
+      "id": "context.sessions",
+      "version": "0.18.0",
+      "sha256": "a97291d3d307ca2bc263760a66dfe5ab23c79d0fa4ba202212031f5994d131cf",
+      "purpose": "SESSION_HISTORY_PROMPT",
+      "output": "text",
+      "contract": "context-data",
+      "acceptance": [
+        "AC-10",
+        "AC-31"
+      ],
+      "status": "legacy_current"
+    },
+    {
+      "id": "context.resources",
+      "version": "0.18.0",
+      "sha256": "96f6f842c4216fbfaf923daa108ff32706f69a8ebdcd3d958aeaef5c5ee290e2",
+      "purpose": "RAG_SYSTEM_PROMPT",
+      "output": "text",
+      "contract": "source-citations",
+      "acceptance": [
+        "AC-20",
+        "AC-23"
+      ],
+      "status": "legacy_current"
+    },
+    {
+      "id": "context.state",
+      "version": "0.18.0",
+      "sha256": "b6b958264da3343a961e4ffbac689361d7c09acb4767b43183525611e73f194d",
+      "purpose": "KNOWN_INFO_PROMPT",
+      "output": "text",
+      "contract": "authoritative-state",
+      "acceptance": [
+        "AC-05",
+        "AC-21"
+      ],
+      "status": "legacy_current"
+    },
+    {
+      "id": "stage.goal_clarification",
+      "version": "0.18.0",
+      "sha256": "0acf3a5817c8c780b4679d1e35075f9278beea9452ce62d205f262cb1c4ca8ed",
+      "purpose": "coach dialogue: goal_clarification",
+      "output": "text",
+      "contract": "stage-dialogue",
+      "acceptance": [
+        "AC-02",
+        "AC-05",
+        "AC-20"
+      ],
+      "status": "legacy_current"
+    },
+    {
+      "id": "stage.assessment",
+      "version": "0.18.0",
+      "sha256": "c1d340097493389682f5364f9a9ff54f16fa79409b3a4b20b5d0bdf811358328",
+      "purpose": "coach dialogue: assessment",
+      "output": "text",
+      "contract": "stage-dialogue",
+      "acceptance": [
+        "AC-02",
+        "AC-05",
+        "AC-20"
+      ],
+      "status": "legacy_current"
+    },
+    {
+      "id": "stage.planning",
+      "version": "0.18.0",
+      "sha256": "04bf37b30a85e631dc26f17e277770dfb9a96f91c63d26ba24ea4edce313305b",
+      "purpose": "coach dialogue: planning",
+      "output": "text",
+      "contract": "stage-dialogue",
+      "acceptance": [
+        "AC-02",
+        "AC-05",
+        "AC-20"
+      ],
+      "status": "legacy_current"
+    },
+    {
+      "id": "stage.learning",
+      "version": "0.18.0",
+      "sha256": "396f7783e5e68f200e7306819ccd2e2edfe023b56197b5cb841cb63682efe269",
+      "purpose": "coach dialogue: learning",
+      "output": "text",
+      "contract": "stage-dialogue",
+      "acceptance": [
+        "AC-02",
+        "AC-05",
+        "AC-20"
+      ],
+      "status": "legacy_current"
+    },
+    {
+      "id": "stage.evaluation",
+      "version": "0.18.0",
+      "sha256": "0f38c1443d2865699de64cc95922f51b8190ea58deb900c13bae7288b6af37fe",
+      "purpose": "coach dialogue: evaluation",
+      "output": "text",
+      "contract": "stage-dialogue",
+      "acceptance": [
+        "AC-02",
+        "AC-05",
+        "AC-20"
+      ],
+      "status": "legacy_current"
+    },
+    {
+      "id": "stage.completed",
+      "version": "0.18.0",
+      "sha256": "b40ade53a1701e3cf7e71a7c08951d936167b115a2098814db712f06c4531199",
+      "purpose": "coach dialogue: completed",
+      "output": "text",
+      "contract": "stage-dialogue",
+      "acceptance": [
+        "AC-02",
+        "AC-05",
+        "AC-20"
+      ],
+      "status": "legacy_current"
+    }
+  ]
+}

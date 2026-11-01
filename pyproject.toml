@@ -32,3 +32,6 @@ learning-coach = "coach.cli.main:main"
 
 [tool.setuptools]
 packages = ["coach", "coach.cli", "coach.domain", "coach.llm", "coach.metrics", "coach.observability", "coach.orchestration", "coach.prompts", "coach.services", "coach.storage"]
+
+[tool.setuptools.package-data]
+"coach.prompts" = ["manifest.json"]

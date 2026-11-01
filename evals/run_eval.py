@@ -101,7 +101,19 @@ def load_cases(path: Path):
             errors.append(f"第 {lineno} 行 JSON 解析失败：{exc}")
             continue
 
-        case_id = case.get("id") or f"<第 {lineno} 行>"
+        if not isinstance(case, dict):
+            errors.append(f"第 {lineno} 行不是 JSON 对象")
+            continue
+        case_id = case.get("id")
+        if not isinstance(case_id, str) or not case_id.strip():
+            errors.append(f"第 {lineno} 行 id 必须是非空字符串")
+            continue
+        if not isinstance(case.get("input"), dict) or not isinstance(case.get("expected"), dict):
+            errors.append(f"[{case_id}] input/expected 必须是对象")
+            continue
+        if not isinstance(case.get("rubric"), str):
+            errors.append(f"[{case_id}] rubric 必须是字符串")
+            continue
         if case_id in seen_ids:
             errors.append(f"[{case_id}] id 重复")
         seen_ids.add(case_id)
@@ -111,14 +123,14 @@ def load_cases(path: Path):
                 errors.append(f"[{case_id}] 缺少必填字段：{field}")
 
         judge = case.get("judge")
-        if judge not in INPUT_KEYS:
+        if not isinstance(judge, str) or judge not in INPUT_KEYS:
             errors.append(f"[{case_id}] 未知 judge：{judge!r}")
             cases.append(case)
             continue
 
-        if case.get("domain") not in VALID_DOMAINS:
+        if not isinstance(case.get("domain"), str) or case.get("domain") not in VALID_DOMAINS:
             errors.append(f"[{case_id}] domain 非法：{case.get('domain')!r}")
-        if case.get("risk") not in VALID_RISKS:
+        if not isinstance(case.get("risk"), str) or case.get("risk") not in VALID_RISKS:
             errors.append(f"[{case_id}] risk 非法：{case.get('risk')!r}")
 
         missing_in = INPUT_KEYS[judge] - set((case.get("input") or {}).keys())
@@ -134,12 +146,16 @@ def load_cases(path: Path):
             errors.append(f"[{case_id}] expected 存在多余字段：{sorted(extra_exp)}")
 
         exp = case.get("expected") or {}
-        if judge == "assessment_verdict" and exp.get("verdict") not in VALID_VERDICTS:
+        if judge in ("submission_detect", "plan_confirm"):
+            field = "is_submission" if judge == "submission_detect" else "confirmed"
+            if type(exp.get(field)) is not bool:
+                errors.append(f"[{case_id}] {field} 必须为布尔值")
+        if judge == "assessment_verdict" and (not isinstance(exp.get("verdict"), str) or exp.get("verdict") not in VALID_VERDICTS):
             errors.append(f"[{case_id}] verdict 非法：{exp.get('verdict')!r}")
         if judge == "evaluation_completion":
-            if exp.get("completion") not in VALID_COMPLETIONS:
+            if not isinstance(exp.get("completion"), str) or exp.get("completion") not in VALID_COMPLETIONS:
                 errors.append(f"[{case_id}] completion 非法：{exp.get('completion')!r}")
-            if exp.get("next_action") not in VALID_ACTIONS:
+            if not isinstance(exp.get("next_action"), str) or exp.get("next_action") not in VALID_ACTIONS:
                 errors.append(f"[{case_id}] next_action 非法：{exp.get('next_action')!r}")
 
         if not (case.get("rubric") or "").strip():
@@ -590,7 +606,7 @@ def main() -> int:
 
     stable = sum(1 for v in case_all_match.values() if v)
     print(f"\n全次一致的用例：{stable}/{len(cases)}")
-    print("阈值：M-01 ≥90%，当前状态【待定】（PRD §3.7 O-02，先测基线再定）。")
+    print("本报告为探索评测；正式验收用 acceptance_protocol.py，每次 ≥90%、关键案例全过、完整运行三次。")
     if errored:
         print(f"⚠ 有 {errored} 次调用失败计入 error，未参与一致率——请先排查接口再解读结果。")
     print("=" * 64)
@@ -616,7 +632,7 @@ def main() -> int:
                 fh.write(json.dumps(item, ensure_ascii=False) + "\n")
 
     print(f"\n结果已导出：{out_path}")
-    return 0 if not errored else 1
+    return 0 if not errored and all(case_all_match.values()) else 1
 
 
 if __name__ == "__main__":

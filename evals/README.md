@@ -43,3 +43,7 @@ python evals/run_eval.py --live --format csv --out evals/results/m01.csv
 - profile_extract 已能区分调用失败，但评价中的“有效输出”仍需内容契约；空对象默认值问题见 D-04。
 - 本评测覆盖判定点，不证明计划质量、跨次保持、持续使用收益或任意领域普适性。
 - 当前数据仍对应旧画像与流程；持续学习的目标、复验及接续需补独立场景，不能用旧数据直接证明新定位有效。
+
+## 本地初版补充协议
+
+新协议见 [本地验收与评测](../docs/acceptance-protocol.md)。新增 acceptance-candidate 30 条均待人工复核，workflow-scenarios 35 条是未执行流程规格；原 dev/holdout 不改。`python evals/acceptance_protocol.py` 只做离线就绪检查，正式三轮采用显式冻结和 live 参数，不能用旧 --repeat 汇总代替。

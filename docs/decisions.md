@@ -58,6 +58,12 @@
 
 已接受、尚未实现。产品数据管理与访问层按领域设置 Router；所有 Agent 数据读取/写入与上下文预加载均经权限和字段检查。用户与会话数据取代含糊的“Agent 长期记忆”命名。见 [决策记录](adr/0009-domain-data-routers.md) 与 [权限矩阵](data-access-design.md)。
 
+## ADR-010：Electron 桌面与独立 Python 核心
+
+2026-11-01：项目负责人选择 Electron。工程方案保留现有 Python 后端，以 TypeScript/React 开发界面；不将选择桌面框架扩大为整体 TypeScript 重写。主进程管理单个 Python 子进程，经版本化 stdio 协议调用统一应用接口；不新增本地 HTTP 服务。Python 独占业务数据写入，界面不复制确认/证据规则。
+
+取舍：复用已有实现，但需要两套工具链、跨语言契约及子进程恢复验证。首期 GitHub 源码体验需准备 Node 与 Python，不承诺免环境安装包。PySide6 不作为本期界面依赖。详细技术选择、模块依赖和验证入口见 [技术选型与模块接口设计](technology-and-module-design.md)；设计不表示实现完成。
+
 ## 必须保留的约束
 
 沿用原 I 编号，供代码注释与测试追溯。以下是约束，不是全部通过验证的声明。

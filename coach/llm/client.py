@@ -45,6 +45,7 @@ def _record_llm_call(
     *,
     result: str,
     response=None,
+    prompt_refs=None,
 ) -> None:
     """记录一条 llm_call 事件；**任何异常都被吞掉**（采集不影响主流程）。"""
     try:
@@ -71,6 +72,7 @@ def _record_llm_call(
             "latency_ms": latency_ms,
             "tokens_in": tokens_in,
             "tokens_out": tokens_out,
+            "prompts": prompt_refs or [],
         }
         if result != "ok":
             call["error"] = result
@@ -83,6 +85,13 @@ def _create(settings: Settings, messages: list[dict], *, label: str | None, **kw
     """发起一次模型调用，并记录指标。"""
     client = get_client(settings)          # 缺 Key 在这里抛，不计入指标（并非模型调用）
     started = time.perf_counter()
+    # Metadata only: dynamic user/state/tool content is not copied into prompt provenance.
+    try:
+        from coach.prompts.catalog import identify_messages
+        prompt_refs = [{k: p[k] for k in ("id", "version", "sha256")}
+                       for p in identify_messages(messages)]
+    except Exception:
+        prompt_refs = []  # provenance collection must not fail an otherwise valid request
     try:
         response = client.chat.completions.create(
             model=settings.model,
@@ -91,11 +100,11 @@ def _create(settings: Settings, messages: list[dict], *, label: str | None, **kw
         )
     except Exception as exc:               # noqa: BLE001 —— 记录后原样抛出，由调用方兜底
         _record_llm_call(
-            settings, started, label, result=f"error:{type(exc).__name__}"
+            settings, started, label, result=f"error:{type(exc).__name__}", prompt_refs=prompt_refs
         )
         raise
 
-    _record_llm_call(settings, started, label, result="ok", response=response)
+    _record_llm_call(settings, started, label, result="ok", response=response, prompt_refs=prompt_refs)
     return response
 
 

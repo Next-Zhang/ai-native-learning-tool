@@ -6,6 +6,8 @@ PRD 1.0 已完成 O-01～O-09 决策并定稿，范围为本机单用户、单�
 
 长期方向已明确为多人在线；当前本机 MVP 范围不变。目标设计现拆为系统、Workflow 和 Agent 运行三份；旧综合记忆规格的范围由 ADR-008 部分替代。
 
+当前体验交付为 GitHub 下载源码后本地运行，暂不涉及多人线上。新增 prompt 管理、验收协议与本地后端设计，均明确区分已实现的管理/评测设施和待开发的产品闭环。
+
 ## 从哪里开始
 
 | 问题 | 文档 | 负责的事实 |
@@ -16,6 +18,12 @@ PRD 1.0 已完成 O-01～O-09 决策并定稿，范围为本机单用户、单�
 | 哪些数据允许 Agent 读写、通过什么 Router | [产品数据管理与访问设计](data-access-design.md) | 数据命名、领域 Router、字段权限及存取判断 |
 | 学习流程的依赖、确认与状态如何约束 | [Workflow 设计](workflow-design.md) | 产品必要依赖与状态放行 |
 | Agent 如何理解、选择行动、执行与恢复 | [Agent 运行设计](agent-runtime-design.md) | 受约束 ReAct、运行契约和检查点 |
+| prompt 如何版本化、审核与追溯 | [Prompt 库管理](prompt-management.md) | 现有 20 项清单/散列与变更规则 |
+| 本地初版怎样验收、评测和复核标签 | [验收协议](acceptance-protocol.md) | 流程、judge、持续学习三类证据与冻结协议 |
+| GitHub 本地体验后端如何开发 | [本地后端设计](backend-design.md) | 应用接口、领域对象、tools、事务、运行和源码交付 |
+| 每个 feature 用什么技术、模块如何解耦 | [技术选型与模块接口设计](technology-and-module-design.md) | Electron/TS + Python、进程协议、依赖方向、数据所有权与开发次序 |
+| 桌面界面怎样体验与逐步调整 | [前端原型说明](frontend-prototype.md) | Figma 可点击初稿、shadcn/ui 组件映射及演示边界 |
+| 怎样查阅此前汇总的用户故事与测试方向 | [本地初版开发规格](local-software-development-spec.md) | 参考汇总；需求以 PRD、工程实现以专项设计为准，不作为另一套独立规格 |
 | 当前 Agent 怎样运行、代码怎样分层 | [当前架构](architecture.md) | 实际实现与模块边界 |
 | 为什么这样设计、哪些方案曾被否决 | [架构决策](decisions.md) | 决策背景、取舍与适用条件 |
 | 已经实现什么、还缺什么、先做什么 | [交付清单](delivery.md) | 唯一的实现状态与待办清单 |
